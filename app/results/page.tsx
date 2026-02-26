@@ -36,6 +36,94 @@ function sevColor(s: string) {
   return "var(--red)";
 }
 
+function formatReportText(data: ReviewData): string {
+  const report = data.synthesis;
+  const lines: string[] = [];
+  lines.push("═══════════════════════════════════════");
+  lines.push("SCRIPT SHIELD — ANALYSIS REPORT");
+  lines.push("═══════════════════════════════════════");
+  lines.push(`State: ${data.caseState} | Status: ${data.caseStatus.toUpperCase()}`);
+  lines.push(`Date: ${new Date(data.createdAt).toLocaleString()}`);
+  lines.push("");
+
+  if (report) {
+    lines.push(`VERDICT: ${report.verdict.replaceAll("_", " ").toUpperCase()}`);
+    lines.push(`RISK SCORE: ${report.riskScore}/100`);
+    lines.push("");
+    lines.push(report.summary);
+    lines.push("");
+
+    // Risk Dashboard
+    if (report.riskDashboard) {
+      lines.push("── RISK DASHBOARD ──");
+      for (const [key, val] of Object.entries(report.riskDashboard)) {
+        lines.push(`  ${key.replace(/([A-Z])/g, " $1").trim()}: ${val.replaceAll("_", " ").toUpperCase()}`);
+      }
+      lines.push("");
+    }
+
+    // Critical Edits
+    if (report.criticalEdits?.length > 0) {
+      lines.push("── CRITICAL EDITS ──");
+      for (const edit of report.criticalEdits) {
+        lines.push(`  ${edit.line ? `Line ${edit.line} — ` : ""}${edit.reason}`);
+        lines.push(`  ORIGINAL: ${edit.original}`);
+        lines.push(`  SUGGESTED: ${edit.suggested}`);
+        lines.push("");
+      }
+    }
+
+    // Recommended Edits
+    if (report.recommendedEdits?.length > 0) {
+      lines.push("── RECOMMENDED EDITS ──");
+      for (const edit of report.recommendedEdits) {
+        lines.push(`  ${edit.line ? `Line ${edit.line} — ` : ""}${edit.reason}`);
+        lines.push(`  ORIGINAL: ${edit.original}`);
+        lines.push(`  SUGGESTED: ${edit.suggested}`);
+        lines.push("");
+      }
+    }
+
+    // Legal Flags
+    if (report.legalFlags?.length > 0) {
+      lines.push("── LEGAL FLAGS ──");
+      for (const flag of report.legalFlags) {
+        lines.push(`  [${flag.severity.toUpperCase()}] ${flag.riskType.replaceAll("_", " ")} — ${flag.person}`);
+        lines.push(`  "${flag.text}"`);
+        lines.push(`  ${flag.reasoning}`);
+        if (flag.stateCitation) lines.push(`  Citation: ${flag.stateCitation}`);
+        lines.push(`  Safer: ${flag.saferRewrite}`);
+        if (flag.counselReview) lines.push(`  ⚠ COUNSEL REVIEW REQUIRED`);
+        lines.push("");
+      }
+    }
+
+    // Policy Flags
+    if (report.policyFlags?.length > 0) {
+      lines.push("── YOUTUBE POLICY FLAGS ──");
+      for (const flag of report.policyFlags) {
+        lines.push(`  [${flag.severity.toUpperCase()}] ${flag.category.replaceAll("_", " ")} — ${flag.impact.replaceAll("_", " ")}`);
+        lines.push(`  "${flag.text}"`);
+        lines.push(`  ${flag.reasoning}`);
+        if (flag.policyQuote) lines.push(`  Policy: ${flag.policyQuote}`);
+        if (flag.saferRewrite) lines.push(`  Safer: ${flag.saferRewrite}`);
+        lines.push("");
+      }
+    }
+
+    // EDSA Checklist
+    if (report.edsaChecklist?.length > 0) {
+      lines.push("── EDSA CHECKLIST ──");
+      for (const item of report.edsaChecklist) {
+        const icon = item.status === "present" ? "[✓]" : item.status === "partial" ? "[~]" : "[✗]";
+        lines.push(`  ${icon} ${item.item}${item.note ? ` — ${item.note}` : ""}`);
+      }
+    }
+  }
+
+  return lines.join("\n");
+}
+
 function ResultsContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -43,6 +131,7 @@ function ResultsContent() {
   const [data, setData] = useState<ReviewData | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"overview" | "legal" | "youtube" | "research" | "raw">("overview");
+  const [copied, setCopied] = useState<"report" | "link" | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -76,12 +165,34 @@ function ResultsContent() {
             {data.caseState} // {data.caseStatus.toUpperCase()} // {new Date(data.createdAt).toLocaleString()}
           </p>
         </div>
-        <button
-          onClick={() => router.push("/")}
-          className="text-xs uppercase tracking-wider border border-[var(--border)] px-4 py-2 hover:bg-[var(--bg-elevated)]"
-        >
-          New Analysis
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => {
+              navigator.clipboard.writeText(formatReportText(data));
+              setCopied("report");
+              setTimeout(() => setCopied(null), 2000);
+            }}
+            className="text-xs uppercase tracking-wider border border-[var(--border)] px-4 py-2 hover:bg-[var(--bg-elevated)]"
+          >
+            {copied === "report" ? "COPIED" : "Copy Report"}
+          </button>
+          <button
+            onClick={() => {
+              navigator.clipboard.writeText(window.location.href);
+              setCopied("link");
+              setTimeout(() => setCopied(null), 2000);
+            }}
+            className="text-xs uppercase tracking-wider border border-[var(--border)] px-4 py-2 hover:bg-[var(--bg-elevated)]"
+          >
+            {copied === "link" ? "COPIED" : "Copy Link"}
+          </button>
+          <button
+            onClick={() => router.push("/")}
+            className="text-xs uppercase tracking-wider border border-[var(--border)] px-4 py-2 hover:bg-[var(--bg-elevated)]"
+          >
+            New Analysis
+          </button>
+        </div>
       </header>
 
       {/* Verdict Banner */}
