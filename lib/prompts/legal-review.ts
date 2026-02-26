@@ -62,7 +62,7 @@ Return JSON array of flags. IMPORTANT: "line" MUST be the exact line number from
 
 If no flags, return empty array [].
 
-IMPORTANT: Only return the TOP 20 most significant flags, prioritized by severity. Do NOT flag every single line — focus on the statements that carry the most legal exposure. Group similar issues (e.g. if the same person is called "killer" on 10 different lines, flag the first/worst instance, not all 10).
+IMPORTANT: Be precise, not repetitive. If the same type of issue appears on multiple lines (e.g. the same person is called "killer" on 10 different lines), flag the FIRST instance and note "similar language appears on lines X, Y, Z" in the reasoning — do NOT create a separate flag for each repetition. Every flag should represent a DISTINCT legal issue.
 
 FULL SCRIPT (with line numbers):
 ${numberLines(script)}`;
