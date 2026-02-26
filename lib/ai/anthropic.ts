@@ -12,7 +12,7 @@ export async function callClaude(
 ): Promise<string> {
   const res = await getAnthropic().messages.create({
     model: "claude-opus-4-6",
-    max_tokens: 16000,
+    max_tokens: 32000,
     system: systemPrompt,
     messages: [{ role: "user", content: userPrompt }],
     temperature: 0.2,

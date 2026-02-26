@@ -225,6 +225,9 @@ export async function runPipeline(
       buildSynthesisPrompt(script, parsed, legalFlags, policyFlags, research, metadata)
     );
     report = safeJsonParse<SynthesisReport>(synthResult);
+    // Inject the actual flags (prompt told Claude to return empty arrays to save tokens)
+    report.legalFlags = legalFlags;
+    report.policyFlags = policyFlags;
     await prisma.review.update({
       where: { id: reviewId },
       data: {
