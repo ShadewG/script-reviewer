@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { prisma } from "@/lib/db";
 import { runPipeline } from "@/lib/pipeline/orchestrator";
 import { parseGoogleDocsUrl, fetchGoogleDocText } from "@/lib/google-docs/fetch";
+import { extractLatestVersion } from "@/lib/utils/extract-latest-version";
 import type { CaseMetadata, StageUpdate } from "@/lib/pipeline/types";
 
 export const dynamic = "force-dynamic";
@@ -39,6 +40,11 @@ export async function POST(req: NextRequest) {
       const msg = err instanceof Error ? err.message : "Failed to fetch document";
       return Response.json({ error: msg }, { status: 422 });
     }
+  }
+
+  // Extract only the latest version if the doc contains multiple drafts
+  if (script) {
+    script = extractLatestVersion(script);
   }
 
   if (!script || !state || !caseStatus) {

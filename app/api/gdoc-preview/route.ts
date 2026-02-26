@@ -3,6 +3,7 @@ import {
   parseGoogleDocsUrl,
   fetchGoogleDocText,
 } from "@/lib/google-docs/fetch";
+import { extractLatestVersion } from "@/lib/utils/extract-latest-version";
 
 export const dynamic = "force-dynamic";
 
@@ -22,7 +23,8 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const text = await fetchGoogleDocText(docId);
+    const raw = await fetchGoogleDocText(docId);
+    const text = extractLatestVersion(raw);
     return Response.json({
       text,
       lineCount: text.split("\n").length,
