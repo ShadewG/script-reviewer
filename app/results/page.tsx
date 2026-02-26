@@ -139,6 +139,7 @@ function ResultsContent() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
   const [copied, setCopied] = useState<"report" | "link" | null>(null);
+  const [expandedDocs, setExpandedDocs] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     if (!id) return;
@@ -360,7 +361,7 @@ function ResultsContent() {
                       <div className="text-xs text-[var(--text-dim)] mb-2">{doc.summary}</div>
                       {doc.verifiableFacts?.length > 0 && (
                         <div className="text-[10px] space-y-1">
-                          {doc.verifiableFacts.slice(0, 5).map((f, j) => (
+                          {(expandedDocs.has(i) ? doc.verifiableFacts : doc.verifiableFacts.slice(0, 5)).map((f, j) => (
                             <div key={j} className="flex items-start gap-1">
                               <span
                                 className="flex-shrink-0 mt-0.5"
@@ -375,9 +376,21 @@ function ResultsContent() {
                             </div>
                           ))}
                           {doc.verifiableFacts.length > 5 && (
-                            <div className="text-[var(--text-dim)]">
-                              + {doc.verifiableFacts.length - 5} more facts
-                            </div>
+                            <button
+                              onClick={() => {
+                                setExpandedDocs(prev => {
+                                  const next = new Set(prev);
+                                  if (next.has(i)) next.delete(i);
+                                  else next.add(i);
+                                  return next;
+                                });
+                              }}
+                              className="text-[var(--text-dim)] hover:text-[var(--text)] underline cursor-pointer"
+                            >
+                              {expandedDocs.has(i)
+                                ? "Show less"
+                                : `+ ${doc.verifiableFacts.length - 5} more facts`}
+                            </button>
                           )}
                         </div>
                       )}
