@@ -1,5 +1,7 @@
 import { prisma } from "@/lib/db";
 
+export const dynamic = "force-dynamic";
+
 export async function GET() {
   const reviews = await prisma.review.findMany({
     orderBy: { createdAt: "desc" },
