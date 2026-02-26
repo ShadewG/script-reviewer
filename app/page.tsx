@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import type { DocumentFacts } from "@/lib/documents/types";
 
 const US_STATES = [
   "Alabama","Alaska","Arizona","Arkansas","California","Colorado","Connecticut",
@@ -47,6 +48,10 @@ export default function Home() {
   const [footageTypes, setFootageTypes] = useState<string[]>([]);
   const [videoTitle, setVideoTitle] = useState("");
   const [thumbnailDesc, setThumbnailDesc] = useState("");
+  const [documentFacts, setDocumentFacts] = useState<DocumentFacts[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadErrors, setUploadErrors] = useState<string[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [running, setRunning] = useState(false);
   const [stages, setStages] = useState<StageStatus[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -79,6 +84,39 @@ export default function Home() {
     }
   };
 
+  const handleFileUpload = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setUploading(true);
+    setUploadErrors([]);
+    try {
+      const formData = new FormData();
+      for (let i = 0; i < files.length; i++) {
+        formData.append("files", files[i]);
+      }
+      const res = await fetch("/api/upload-docs", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      if (data.documents?.length > 0) {
+        setDocumentFacts((prev) => [...prev, ...data.documents]);
+      }
+      if (data.errors?.length > 0) {
+        setUploadErrors(data.errors);
+      }
+    } catch (err) {
+      setUploadErrors([err instanceof Error ? err.message : "Upload failed"]);
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }, []);
+
+  const removeDoc = (index: number) => {
+    setDocumentFacts((prev) => prev.filter((_, i) => i !== index));
+  };
+
   const handleSubmit = async () => {
     const scriptText = inputMode === "gdoc" ? gdocPreview?.text || script : script;
     if (!scriptText.trim()) return;
@@ -102,6 +140,7 @@ export default function Home() {
         footageTypes,
         videoTitle: videoTitle || undefined,
         thumbnailDesc: thumbnailDesc || undefined,
+        documentFacts: documentFacts.length > 0 ? documentFacts : undefined,
       };
 
       if (inputMode === "gdoc" && gdocUrl && !gdocPreview) {
@@ -360,6 +399,67 @@ export default function Home() {
                 </label>
               ))}
             </div>
+          </div>
+
+          <div>
+            <label className="text-xs text-[var(--text-dim)] uppercase tracking-wider mb-2 block">
+              Supplemental Docs
+            </label>
+            <p className="text-[10px] text-[var(--text-dim)] mb-2">
+              Upload police reports, court filings, autopsy reports to verify script claims and reduce false flags
+            </p>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept=".pdf,.png,.jpg,.jpeg,.webp"
+              onChange={(e) => handleFileUpload(e.target.files)}
+              disabled={running || uploading}
+              className="hidden"
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={running || uploading}
+              className="w-full py-2 text-xs uppercase tracking-wider border border-dashed border-[var(--border)] text-[var(--text-dim)] hover:text-[var(--text)] hover:border-[var(--text-dim)] disabled:opacity-30 transition-colors"
+            >
+              {uploading ? "PROCESSING..." : "UPLOAD DOCUMENTS"}
+            </button>
+            {uploadErrors.length > 0 && (
+              <div className="mt-2 space-y-1">
+                {uploadErrors.map((err, i) => (
+                  <div key={i} className="text-[10px] text-[var(--red)]">{err}</div>
+                ))}
+              </div>
+            )}
+            {documentFacts.length > 0 && (
+              <div className="mt-2 space-y-2">
+                {documentFacts.map((doc, i) => (
+                  <div
+                    key={i}
+                    className="border border-[var(--border)] bg-[var(--bg-surface)] p-2 text-[10px]"
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[var(--text-bright)] font-medium truncate">
+                        {doc.fileName}
+                      </span>
+                      <button
+                        onClick={() => removeDoc(i)}
+                        disabled={running}
+                        className="text-[var(--text-dim)] hover:text-[var(--red)] ml-2 flex-shrink-0"
+                      >
+                        X
+                      </button>
+                    </div>
+                    <div className="text-[var(--text-dim)]">
+                      {doc.docType} / {doc.verifiableFacts.length} facts / {doc.people.length} people
+                    </div>
+                    <div className="text-[var(--text-dim)] mt-1 line-clamp-2">
+                      {doc.summary}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <button

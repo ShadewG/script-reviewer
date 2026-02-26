@@ -77,6 +77,9 @@ model Review {
   videoTitle    String?
   thumbnailDesc String?
 
+  // Supplemental documentation (police reports, etc.)
+  supplementalDocs    Json?   // DocumentFacts[] extracted from uploaded docs
+
   // Stage outputs
   parsedEntities      Json?
   legalFlags          Json?

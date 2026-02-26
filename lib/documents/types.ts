@@ -1,0 +1,43 @@
+export interface ExtractedPerson {
+  name: string;
+  role: string;
+  actions: string[];
+  pageRefs: number[];
+}
+
+export interface ExtractedEvent {
+  description: string;
+  date?: string;
+  time?: string;
+  page?: number;
+}
+
+export interface ExtractedEvidence {
+  type: string;
+  description: string;
+  page?: number;
+}
+
+export interface ExtractedQuote {
+  text: string;
+  speaker: string;
+  page?: number;
+}
+
+export interface VerifiableFact {
+  claim: string;
+  source: string;
+  confidence: "confirmed" | "likely" | "uncertain";
+}
+
+export interface DocumentFacts {
+  fileName: string;
+  docType: string;
+  summary: string;
+  people: ExtractedPerson[];
+  events: ExtractedEvent[];
+  evidence: ExtractedEvidence[];
+  quotes: ExtractedQuote[];
+  verifiableFacts: VerifiableFact[];
+  rawTextPreview?: string;
+}

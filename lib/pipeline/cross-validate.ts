@@ -10,6 +10,7 @@ import type {
   LegalFlag,
   ResearchFindings,
 } from "./types";
+import type { DocumentFacts } from "../documents/types";
 
 function safeJsonParse<T>(text: string): T {
   let cleaned = text.trim();
@@ -219,14 +220,16 @@ export async function runMultiModelLegalReview(
   parsed: ParsedScript,
   metadata: CaseMetadata,
   stateLaw: Record<string, unknown>,
-  research?: ResearchFindings
+  research?: ResearchFindings,
+  documentFacts?: DocumentFacts[]
 ): Promise<{ flags: CrossValidatedLegalFlag[]; raw: CrossValidationRaw }> {
   const legalPrompt = buildLegalPrompt(
     script,
     parsed,
     metadata,
     stateLaw,
-    research
+    research,
+    documentFacts
   );
 
   const [claudeResult, gptResult] = await Promise.allSettled([

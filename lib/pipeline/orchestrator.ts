@@ -21,6 +21,7 @@ import type {
   SynthesisReport,
   StageUpdate,
 } from "./types";
+import type { DocumentFacts } from "../documents/types";
 
 function safeJsonParse<T>(text: string): T {
   let cleaned = text.trim();
@@ -188,7 +189,8 @@ export async function runPipeline(
       parsed,
       metadata,
       (stateLaw as never) ?? { note: "State law not in database, use general US defamation principles" },
-      research ?? undefined
+      research ?? undefined,
+      metadata.documentFacts
     );
 
     legalFlags = flags;

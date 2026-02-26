@@ -1,9 +1,67 @@
 import { NextRequest } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { runPipeline } from "@/lib/pipeline/orchestrator";
 import { parseGoogleDocsUrl, fetchGoogleDocText } from "@/lib/google-docs/fetch";
 import { extractLatestVersion } from "@/lib/utils/extract-latest-version";
 import type { CaseMetadata, StageUpdate } from "@/lib/pipeline/types";
+import type { DocumentFacts } from "@/lib/documents/types";
+
+const DocumentFactsSchema = z.array(
+  z.object({
+    fileName: z.string().max(255),
+    docType: z.string().max(50),
+    summary: z.string().max(5000),
+    people: z
+      .array(
+        z.object({
+          name: z.string().max(200),
+          role: z.string().max(100),
+          actions: z.array(z.string().max(500)).max(50),
+          pageRefs: z.array(z.number()).max(100),
+        })
+      )
+      .max(100),
+    events: z
+      .array(
+        z.object({
+          description: z.string().max(1000),
+          date: z.string().max(20).optional(),
+          time: z.string().max(20).optional(),
+          page: z.number().optional(),
+        })
+      )
+      .max(200),
+    evidence: z
+      .array(
+        z.object({
+          type: z.string().max(100),
+          description: z.string().max(1000),
+          page: z.number().optional(),
+        })
+      )
+      .max(100),
+    quotes: z
+      .array(
+        z.object({
+          text: z.string().max(2000),
+          speaker: z.string().max(200),
+          page: z.number().optional(),
+        })
+      )
+      .max(100),
+    verifiableFacts: z
+      .array(
+        z.object({
+          claim: z.string().max(2000),
+          source: z.string().max(500),
+          confidence: z.enum(["confirmed", "likely", "uncertain"]),
+        })
+      )
+      .max(200),
+    rawTextPreview: z.string().max(5000).optional(),
+  })
+).max(10);
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -19,6 +77,7 @@ export async function POST(req: NextRequest) {
     footageTypes,
     videoTitle,
     thumbnailDesc,
+    documentFacts,
   } = body;
 
   // Resolve script text from either direct paste or Google Doc URL
@@ -54,6 +113,19 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Validate documentFacts if provided
+  let validatedFacts: DocumentFacts[] | undefined;
+  if (Array.isArray(documentFacts) && documentFacts.length > 0) {
+    try {
+      validatedFacts = DocumentFactsSchema.parse(documentFacts);
+    } catch {
+      return Response.json(
+        { error: "Invalid documentFacts format" },
+        { status: 400 }
+      );
+    }
+  }
+
   const metadata: CaseMetadata = {
     state,
     caseStatus,
@@ -61,6 +133,7 @@ export async function POST(req: NextRequest) {
     footageTypes: footageTypes ?? [],
     videoTitle,
     thumbnailDesc,
+    documentFacts: validatedFacts,
   };
 
   const review = await prisma.review.create({
@@ -73,6 +146,7 @@ export async function POST(req: NextRequest) {
       footageTypes: metadata.footageTypes,
       videoTitle,
       thumbnailDesc,
+      supplementalDocs: validatedFacts as never ?? undefined,
       status: "processing",
     },
   });

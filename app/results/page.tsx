@@ -3,6 +3,7 @@
 import { useEffect, useState, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import type { SynthesisReport, LegalFlag, PolicyFlag } from "@/lib/pipeline/types";
+import type { DocumentFacts } from "@/lib/documents/types";
 import AnnotatedScriptView from "./components/AnnotatedScriptView";
 
 interface ReviewData {
@@ -14,6 +15,7 @@ interface ReviewData {
   caseState: string;
   caseStatus: string;
   hasMinors: boolean;
+  supplementalDocs: DocumentFacts[] | null;
   synthesis: SynthesisReport | null;
   legalFlags: LegalFlag[] | null;
   legalCrossValidation: {
@@ -334,6 +336,50 @@ function ResultsContent() {
                       <span>{item.item}</span>
                       {item.note && (
                         <span className="text-[var(--text-dim)]">— {item.note}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {data.supplementalDocs && data.supplementalDocs.length > 0 && (
+              <section>
+                <h3 className="text-xs uppercase tracking-wider text-[var(--text-dim)] mb-3 flex items-center gap-2">
+                  <span className="w-2 h-2 bg-[var(--text-dim)]" /> Supplemental Documentation
+                </h3>
+                <div className="space-y-2">
+                  {data.supplementalDocs.map((doc, i) => (
+                    <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-xs text-[var(--text-bright)]">{doc.fileName}</span>
+                        <span className="text-[10px] text-[var(--text-dim)] uppercase border border-[var(--border)] px-1">
+                          {doc.docType.replace(/_/g, " ")}
+                        </span>
+                      </div>
+                      <div className="text-xs text-[var(--text-dim)] mb-2">{doc.summary}</div>
+                      {doc.verifiableFacts?.length > 0 && (
+                        <div className="text-[10px] space-y-1">
+                          {doc.verifiableFacts.slice(0, 5).map((f, j) => (
+                            <div key={j} className="flex items-start gap-1">
+                              <span
+                                className="flex-shrink-0 mt-0.5"
+                                style={{
+                                  color: f.confidence === "confirmed" ? "var(--green)" :
+                                    f.confidence === "likely" ? "var(--yellow)" : "var(--text-dim)",
+                                }}
+                              >
+                                [{f.confidence.toUpperCase()}]
+                              </span>
+                              <span className="text-[var(--text)]">{f.claim}</span>
+                            </div>
+                          ))}
+                          {doc.verifiableFacts.length > 5 && (
+                            <div className="text-[var(--text-dim)]">
+                              + {doc.verifiableFacts.length - 5} more facts
+                            </div>
+                          )}
+                        </div>
                       )}
                     </div>
                   ))}

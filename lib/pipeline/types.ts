@@ -5,6 +5,7 @@ export interface CaseMetadata {
   footageTypes: string[];
   videoTitle?: string;
   thumbnailDesc?: string;
+  documentFacts?: import("../documents/types").DocumentFacts[];
 }
 
 export interface ParsedEntity {

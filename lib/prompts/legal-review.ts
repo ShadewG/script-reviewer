@@ -1,15 +1,86 @@
 import type { ParsedScript, ResearchFindings, CaseMetadata } from "../pipeline/types";
+import type { DocumentFacts } from "../documents/types";
 import { numberLines } from "../utils/line-numbers";
 
 export const LEGAL_SYSTEM = `You are a defamation and media law risk analyst for documentary content. You analyze scripts for legal risk with precision, citing specific state law provisions. You are thorough but do not over-flag clearly protected speech. The script is provided with line numbers — you MUST include the exact line number for every flag. Return ONLY valid JSON.`;
+
+function buildDocumentFactsSection(docs: DocumentFacts[]): string {
+  if (!docs.length) return "";
+
+  const sections = docs.map((doc) => {
+    const parts = [`--- ${doc.fileName} (${doc.docType}) ---`, doc.summary];
+
+    if (doc.people.length > 0) {
+      parts.push(
+        "People documented: " +
+          doc.people
+            .map(
+              (p) =>
+                `${p.name} (${p.role}): ${p.actions.join("; ")}`
+            )
+            .join(" | ")
+      );
+    }
+
+    if (doc.verifiableFacts.length > 0) {
+      parts.push(
+        "Verified facts:\n" +
+          doc.verifiableFacts
+            .map(
+              (f) =>
+                `  - [${f.confidence.toUpperCase()}] ${f.claim} (source: ${f.source})`
+            )
+            .join("\n")
+      );
+    }
+
+    if (doc.quotes.length > 0) {
+      parts.push(
+        "Key quotes:\n" +
+          doc.quotes
+            .map((q) => `  - "${q.text}" — ${q.speaker}`)
+            .join("\n")
+      );
+    }
+
+    if (doc.events.length > 0) {
+      parts.push(
+        "Documented events:\n" +
+          doc.events
+            .map(
+              (e) =>
+                `  - ${e.date ?? ""}${e.time ? " " + e.time : ""}: ${e.description}`
+            )
+            .join("\n")
+      );
+    }
+
+    return parts.join("\n");
+  });
+
+  return `
+SUPPLEMENTAL DOCUMENTATION (police reports, court filings, etc.):
+The creator has provided official documents. Use these to VERIFY script claims.
+If a script claim is CONFIRMED by these documents, REDUCE the severity or REMOVE the flag entirely.
+If a script claim CONTRADICTS these documents, INCREASE the severity and note the discrepancy.
+
+${sections.join("\n\n")}
+
+IMPORTANT: Cross-reference script claims against these documented facts. A claim backed by official records is NOT defamatory — it's a truthful statement, which is a complete defense to defamation.`;
+}
 
 export function buildLegalPrompt(
   script: string,
   parsed: ParsedScript,
   metadata: CaseMetadata,
   stateLaw: Record<string, unknown>,
-  research?: ResearchFindings
+  research?: ResearchFindings,
+  documentFacts?: DocumentFacts[]
 ): string {
+  const docsSection = documentFacts?.length
+    ? buildDocumentFactsSection(documentFacts)
+    : "";
+
   return `Analyze this crime documentary script for defamation and privacy tort risk.
 
 STATE JURISDICTION: ${metadata.state}
@@ -26,6 +97,7 @@ PARSED CLAIMS:
 ${JSON.stringify(parsed.claims, null, 2)}
 
 ${research ? `CASE RESEARCH FINDINGS:\n${JSON.stringify(research, null, 2)}` : "NO CASE RESEARCH AVAILABLE"}
+${docsSection}
 
 For EACH named individual, evaluate:
 
