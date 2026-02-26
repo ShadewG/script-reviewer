@@ -7,6 +7,10 @@ import { extractLatestVersion } from "@/lib/utils/extract-latest-version";
 import type { CaseMetadata, StageUpdate } from "@/lib/pipeline/types";
 import type { DocumentFacts } from "@/lib/documents/types";
 
+// nullable() handles Claude returning null for optional fields
+const optStr = (max: number) => z.string().max(max).nullable().optional();
+const optNum = () => z.number().nullable().optional();
+
 const DocumentFactsSchema = z.array(
   z.object({
     fileName: z.string().max(255),
@@ -26,9 +30,9 @@ const DocumentFactsSchema = z.array(
       .array(
         z.object({
           description: z.string().max(1000),
-          date: z.string().max(20).optional(),
-          time: z.string().max(20).optional(),
-          page: z.number().optional(),
+          date: optStr(20),
+          time: optStr(20),
+          page: optNum(),
         })
       )
       .max(200),
@@ -37,7 +41,7 @@ const DocumentFactsSchema = z.array(
         z.object({
           type: z.string().max(100),
           description: z.string().max(1000),
-          page: z.number().optional(),
+          page: optNum(),
         })
       )
       .max(100),
@@ -46,7 +50,7 @@ const DocumentFactsSchema = z.array(
         z.object({
           text: z.string().max(2000),
           speaker: z.string().max(200),
-          page: z.number().optional(),
+          page: optNum(),
         })
       )
       .max(100),
@@ -59,7 +63,7 @@ const DocumentFactsSchema = z.array(
         })
       )
       .max(200),
-    rawTextPreview: z.string().max(5000).optional(),
+    rawTextPreview: z.string().max(5000).nullable().optional(),
   })
 ).max(10);
 
