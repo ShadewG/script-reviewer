@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { processDocument } from "@/lib/documents/process";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB per file
 const MAX_TOTAL_SIZE = 30 * 1024 * 1024; // 30MB total
@@ -60,9 +60,10 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const results = [];
   const errors: string[] = [];
 
+  // Validate all files first, then process in parallel
+  const validFiles: Array<{ buffer: Buffer; safeName: string; mime: string }> = [];
   for (const file of files) {
     if (file.size > MAX_FILE_SIZE) {
       errors.push(`${file.name}: File too large (max 10MB)`);
@@ -78,15 +79,31 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
-    const safeName = sanitizeFileName(file.name);
+    validFiles.push({
+      buffer,
+      safeName: sanitizeFileName(file.name),
+      mime: detectedMime,
+    });
+  }
 
-    try {
-      const facts = await processDocument(buffer, safeName, detectedMime);
-      results.push(facts);
-    } catch (err) {
+  // Process all files in parallel
+  const settled = await Promise.allSettled(
+    validFiles.map(({ buffer, safeName, mime }) =>
+      processDocument(buffer, safeName, mime)
+    )
+  );
+
+  const results = [];
+  for (let i = 0; i < settled.length; i++) {
+    const result = settled[i];
+    if (result.status === "fulfilled") {
+      results.push(result.value);
+    } else {
       const msg =
-        err instanceof Error ? err.message : "Processing failed";
-      errors.push(`${safeName}: ${msg}`);
+        result.reason instanceof Error
+          ? result.reason.message
+          : "Processing failed";
+      errors.push(`${validFiles[i].safeName}: ${msg}`);
     }
   }
 
