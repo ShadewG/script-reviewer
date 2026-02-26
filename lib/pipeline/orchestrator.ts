@@ -24,12 +24,32 @@ import type {
 
 function safeJsonParse<T>(text: string): T {
   let cleaned = text.trim();
+  // Strip markdown code fences
   cleaned = cleaned.replace(/^```[\w]*\s*\n?/, "").replace(/\n?```\s*$/, "");
+  // Find JSON in text if not already starting with [ or {
   if (!cleaned.startsWith("[") && !cleaned.startsWith("{")) {
     const jsonMatch = cleaned.match(/[\[{][\s\S]*[\]}]/);
     if (jsonMatch) cleaned = jsonMatch[0];
   }
-  return JSON.parse(cleaned) as T;
+  try {
+    return JSON.parse(cleaned) as T;
+  } catch (e) {
+    // Try to fix truncated JSON by closing open brackets/braces
+    let fixed = cleaned;
+    const opens = (fixed.match(/\[/g) || []).length;
+    const closes = (fixed.match(/\]/g) || []).length;
+    const braceOpens = (fixed.match(/\{/g) || []).length;
+    const braceCloses = (fixed.match(/\}/g) || []).length;
+    // Remove trailing comma before closing
+    fixed = fixed.replace(/,\s*$/, "");
+    for (let i = 0; i < braceOpens - braceCloses; i++) fixed += "}";
+    for (let i = 0; i < opens - closes; i++) fixed += "]";
+    try {
+      return JSON.parse(fixed) as T;
+    } catch {
+      throw e; // throw original error if fix didn't work
+    }
+  }
 }
 
 export type OnProgress = (update: StageUpdate) => void;
