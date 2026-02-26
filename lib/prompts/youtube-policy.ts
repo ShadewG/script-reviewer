@@ -99,6 +99,8 @@ Return JSON array of flags. "line" MUST be the exact line number — NEVER null:
 
 If no flags, return empty array []. For a typical well-made true crime script, expect 0-5 flags, not 10+.
 
+CRITICAL: Do NOT flag the same text multiple times. If the exact same line or very similar wording appears in multiple places in the script (e.g. repeated across draft versions), flag it ONCE at the first occurrence and note "same text also appears on lines X, Y, Z" in the reasoning. Every flag must be a DISTINCT issue.
+
 FULL SCRIPT (with line numbers):
 ${numberLines(script)}`;
 }
