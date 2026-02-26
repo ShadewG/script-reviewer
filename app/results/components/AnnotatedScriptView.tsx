@@ -234,7 +234,7 @@ export default function AnnotatedScriptView({
                             )}
                             {"agreementCount" in lf && (
                               <span className="text-[10px] text-[var(--text-dim)] border border-[var(--border)] px-1">
-                                {(lf as unknown as { agreementCount: number }).agreementCount}/3
+                                {(lf as unknown as { agreementCount: number }).agreementCount}/2
                               </span>
                             )}
                           </div>

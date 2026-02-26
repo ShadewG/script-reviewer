@@ -171,7 +171,7 @@ export async function runPipeline(
   }
 
   // --- Stage 1: Legal Review — Multi-Model Cross-Validation ---
-  emit({ stage: 1, name: "Legal Review (3-Model)", status: "running" });
+  emit({ stage: 1, name: "Legal Review (Cross-Check)", status: "running" });
   let legalFlags: LegalFlag[] = [];
   try {
     const stateLaw = await prisma.stateDefamationLaw.findFirst({
@@ -200,10 +200,10 @@ export async function runPipeline(
         legalCrossValidation: raw as never,
       },
     });
-    emit({ stage: 1, name: "Legal Review (3-Model)", status: "complete", data: legalFlags });
+    emit({ stage: 1, name: "Legal Review (Cross-Check)", status: "complete", data: legalFlags });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Legal review failed";
-    emit({ stage: 1, name: "Legal Review (3-Model)", status: "error", error: msg });
+    emit({ stage: 1, name: "Legal Review (Cross-Check)", status: "error", error: msg });
     legalFlags = [{
       text: "LEGAL REVIEW STAGE FAILED",
       person: "N/A",

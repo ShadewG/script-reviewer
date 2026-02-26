@@ -1,10 +1,8 @@
 import { callClaude } from "../ai/anthropic";
 import { callGPT } from "../ai/openai";
-import { callSonarLegal } from "../ai/perplexity";
 import {
   LEGAL_SYSTEM,
   buildLegalPrompt,
-  buildLegalPromptForPerplexity,
 } from "../prompts/legal-review";
 import type {
   ParsedScript,
@@ -230,20 +228,11 @@ export async function runMultiModelLegalReview(
     stateLaw,
     research
   );
-  const perplexityPrompt = buildLegalPromptForPerplexity(
-    script,
-    parsed,
-    metadata,
-    stateLaw,
-    research
-  );
 
-  const [claudeResult, gptResult, perplexityResult] =
-    await Promise.allSettled([
-      callClaude(LEGAL_SYSTEM, legalPrompt),
-      callGPT(LEGAL_SYSTEM, legalPrompt),
-      callSonarLegal(perplexityPrompt),
-    ]);
+  const [claudeResult, gptResult] = await Promise.allSettled([
+    callClaude(LEGAL_SYSTEM, legalPrompt),
+    callGPT(LEGAL_SYSTEM, legalPrompt),
+  ]);
 
   const claudeFlags: LegalFlag[] =
     claudeResult.status === "fulfilled"
@@ -253,28 +242,13 @@ export async function runMultiModelLegalReview(
     gptResult.status === "fulfilled"
       ? safeJsonParse<LegalFlag[]>(gptResult.value)
       : [];
-  const perplexityFlags: LegalFlag[] =
-    perplexityResult.status === "fulfilled"
-      ? (() => {
-          try {
-            return safeJsonParse<LegalFlag[]>(perplexityResult.value);
-          } catch {
-            return [];
-          }
-        })()
-      : [];
 
-  // If all three models failed, throw so orchestrator can handle it
-  if (
-    claudeResult.status === "rejected" &&
-    gptResult.status === "rejected" &&
-    perplexityResult.status === "rejected"
-  ) {
+  if (claudeResult.status === "rejected" && gptResult.status === "rejected") {
     throw new Error(
-      `All 3 legal models failed: Claude: ${claudeResult.reason}, GPT: ${gptResult.reason}, Perplexity: ${perplexityResult.reason}`
+      `Both legal models failed: Claude: ${claudeResult.reason}, GPT: ${gptResult.reason}`
     );
   }
 
-  const { merged, raw } = mergeFlags(claudeFlags, gptFlags, perplexityFlags);
+  const { merged, raw } = mergeFlags(claudeFlags, gptFlags, []);
   return { flags: merged, raw };
 }

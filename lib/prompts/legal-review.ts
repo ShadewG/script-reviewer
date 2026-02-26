@@ -62,18 +62,8 @@ Return JSON array of flags. IMPORTANT: "line" MUST be the exact line number from
 
 If no flags, return empty array [].
 
+IMPORTANT: Only return the TOP 20 most significant flags, prioritized by severity. Do NOT flag every single line — focus on the statements that carry the most legal exposure. Group similar issues (e.g. if the same person is called "killer" on 10 different lines, flag the first/worst instance, not all 10).
+
 FULL SCRIPT (with line numbers):
 ${numberLines(script)}`;
-}
-
-export function buildLegalPromptForPerplexity(
-  script: string,
-  parsed: ParsedScript,
-  metadata: CaseMetadata,
-  stateLaw: Record<string, unknown>,
-  research?: ResearchFindings
-): string {
-  return `${LEGAL_SYSTEM}
-
-${buildLegalPrompt(script, parsed, metadata, stateLaw, research)}`;
 }

@@ -360,20 +360,16 @@ function ResultsContent() {
             {data.legalCrossValidation && (
               <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 mb-4">
                 <div className="text-xs text-[var(--text-dim)] uppercase tracking-wider mb-2">
-                  Cross-Validation Summary (3-Model)
+                  Cross-Validation Summary (Claude + GPT)
                 </div>
-                <div className="grid grid-cols-3 gap-2 text-[10px]">
+                <div className="grid grid-cols-2 gap-2 text-[10px]">
                   <div>
-                    <span className="text-[var(--text-dim)]">Claude: </span>
+                    <span className="text-[var(--text-dim)]">Claude Opus: </span>
                     <span className="text-[var(--text-bright)]">{data.legalCrossValidation.claude.length} flags</span>
                   </div>
                   <div>
-                    <span className="text-[var(--text-dim)]">GPT: </span>
+                    <span className="text-[var(--text-dim)]">GPT-5.2: </span>
                     <span className="text-[var(--text-bright)]">{data.legalCrossValidation.gpt.length} flags</span>
-                  </div>
-                  <div>
-                    <span className="text-[var(--text-dim)]">Perplexity: </span>
-                    <span className="text-[var(--text-bright)]">{data.legalCrossValidation.perplexity.length} flags</span>
                   </div>
                 </div>
               </div>
@@ -417,11 +413,11 @@ function ResultsContent() {
                         <span
                           className="text-[10px] border px-1"
                           style={{
-                            color: cv.agreementCount >= 3 ? "var(--red)" : cv.agreementCount >= 2 ? "var(--yellow)" : "var(--text-dim)",
-                            borderColor: cv.agreementCount >= 3 ? "var(--red)" : cv.agreementCount >= 2 ? "var(--yellow)" : "var(--border)",
+                            color: cv.agreementCount >= 2 ? "var(--red)" : "var(--text-dim)",
+                            borderColor: cv.agreementCount >= 2 ? "var(--red)" : "var(--border)",
                           }}
                         >
-                          {cv.agreementCount}/3 MODELS
+                          {cv.agreementCount}/2 MODELS
                         </span>
                       )}
                     </div>

@@ -86,7 +86,7 @@ export default function Home() {
     setError(null);
     setStages([
       { stage: 0, name: "SCRIPT PARSER", status: "pending" },
-      { stage: 1, name: "LEGAL REVIEW (3-MODEL)", status: "pending" },
+      { stage: 1, name: "LEGAL REVIEW (CROSS-CHECK)", status: "pending" },
       { stage: 2, name: "YOUTUBE POLICY", status: "pending" },
       { stage: 3, name: "CASE RESEARCH", status: "pending" },
       { stage: 4, name: "SYNTHESIS", status: "pending" },
