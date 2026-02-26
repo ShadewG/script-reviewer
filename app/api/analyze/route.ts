@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { runPipeline } from "@/lib/pipeline/orchestrator";
 import type { CaseMetadata, StageUpdate } from "@/lib/pipeline/types";
 
+export const dynamic = "force-dynamic";
 export const maxDuration = 300; // 5 min for Railway
 
 export async function POST(req: NextRequest) {
