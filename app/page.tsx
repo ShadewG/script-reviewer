@@ -97,8 +97,13 @@ export default function Home() {
         method: "POST",
         body: formData,
       });
+      if (!res.ok) {
+        const text = await res.text();
+        let msg = `Upload failed (${res.status})`;
+        try { msg = JSON.parse(text).error || msg; } catch { /* not JSON */ }
+        throw new Error(msg);
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
       if (data.documents?.length > 0) {
         setDocumentFacts((prev) => [...prev, ...data.documents]);
       }

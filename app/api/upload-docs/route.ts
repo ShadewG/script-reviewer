@@ -33,7 +33,12 @@ function sanitizeFileName(name: string): string {
 }
 
 export async function POST(req: NextRequest) {
-  const formData = await req.formData();
+  let formData: FormData;
+  try {
+    formData = await req.formData();
+  } catch {
+    return Response.json({ error: "Invalid form data" }, { status: 400 });
+  }
   const files = formData.getAll("files") as File[];
 
   if (!files.length) {

@@ -1,5 +1,4 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { PDFParse } from "pdf-parse";
 import type { DocumentFacts } from "./types";
 
 let _anthropic: Anthropic | null = null;
@@ -80,92 +79,48 @@ export async function processDocument(
     );
   }
 
-  let textContent: string | null = null;
+  const base64 = fileBuffer.toString("base64");
+  const contentBlocks: Anthropic.Messages.ContentBlockParam[] = [];
 
-  // For PDFs, try text extraction first (cheaper than vision)
   if (isPdf) {
-    let parser: PDFParse | null = null;
-    try {
-      parser = new PDFParse({ data: fileBuffer });
-      const textResult = await parser.getText();
-      const totalPages = textResult.total || 1;
-      const charsPerPage = textResult.text.length / totalPages;
-      if (charsPerPage > 50) {
-        textContent = textResult.text;
-      }
-    } catch {
-      // pdf-parse failed — fall back to vision
-    } finally {
-      if (parser) await parser.destroy().catch(() => {});
-    }
-  }
-
-  let result: string;
-
-  if (textContent) {
-    // Text-based extraction — no vision needed
-    const truncated = textContent.slice(0, 30000);
-    const stream = getAnthropic().messages.stream({
-      model: "claude-sonnet-4-6",
-      max_tokens: 8000,
-      system: EXTRACTION_SYSTEM,
-      messages: [
-        {
-          role: "user",
-          content: `Extract all facts from this document.\n\nFILE: ${fileName}\n\n${truncated}`,
-        },
-      ],
-      temperature: 0.1,
-    });
-    const response = await stream.finalMessage();
-    result =
-      response.content[0].type === "text" ? response.content[0].text : "";
-  } else {
-    // Vision-based extraction — for scanned PDFs and images
-    const base64 = fileBuffer.toString("base64");
-
-    const contentBlocks: Anthropic.Messages.ContentBlockParam[] = [];
-
-    if (isPdf) {
-      contentBlocks.push({
-        type: "document",
-        source: {
-          type: "base64",
-          media_type: "application/pdf",
-          data: base64,
-        },
-      } as Anthropic.Messages.ContentBlockParam);
-    } else {
-      contentBlocks.push({
-        type: "image",
-        source: {
-          type: "base64",
-          media_type: mimeType as
-            | "image/png"
-            | "image/jpeg"
-            | "image/webp"
-            | "image/gif",
-          data: base64,
-        },
-      });
-    }
-
     contentBlocks.push({
-      type: "text",
-      text: `Extract all factual information from this document. File: ${fileName}`,
+      type: "document",
+      source: {
+        type: "base64",
+        media_type: "application/pdf",
+        data: base64,
+      },
+    } as Anthropic.Messages.ContentBlockParam);
+  } else {
+    contentBlocks.push({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: mimeType as
+          | "image/png"
+          | "image/jpeg"
+          | "image/webp"
+          | "image/gif",
+        data: base64,
+      },
     });
-
-    const stream = getAnthropic().messages.stream({
-      model: "claude-sonnet-4-6",
-      max_tokens: 8000,
-      system: EXTRACTION_SYSTEM,
-      messages: [{ role: "user", content: contentBlocks }],
-      temperature: 0.1,
-    });
-    const response = await stream.finalMessage();
-    result =
-      response.content[0].type === "text" ? response.content[0].text : "";
   }
+
+  contentBlocks.push({
+    type: "text",
+    text: `Extract all factual information from this document. File: ${fileName}`,
+  });
+
+  const stream = getAnthropic().messages.stream({
+    model: "claude-sonnet-4-6",
+    max_tokens: 8000,
+    system: EXTRACTION_SYSTEM,
+    messages: [{ role: "user", content: contentBlocks }],
+    temperature: 0.1,
+  });
+  const response = await stream.finalMessage();
+  const result =
+    response.content[0].type === "text" ? response.content[0].text : "";
 
   // Parse JSON response
   let cleaned = result.trim();
@@ -173,7 +128,6 @@ export async function processDocument(
     .replace(/^```[\w]*\s*\n?/, "")
     .replace(/\n?```\s*$/, "");
 
-  // Find JSON object in response
   if (!cleaned.startsWith("{")) {
     const match = cleaned.match(/\{[\s\S]*\}/);
     if (match) cleaned = match[0];
@@ -183,7 +137,6 @@ export async function processDocument(
   try {
     parsed = JSON.parse(cleaned);
   } catch {
-    // Try fixing truncated JSON
     try {
       let fixed = cleaned.replace(/,\s*$/, "");
       const braceOpens = (fixed.match(/\{/g) || []).length;
@@ -210,6 +163,5 @@ export async function processDocument(
     quotes: (parsed.quotes as DocumentFacts["quotes"]) ?? [],
     verifiableFacts:
       (parsed.verifiableFacts as DocumentFacts["verifiableFacts"]) ?? [],
-    rawTextPreview: textContent?.slice(0, 3000),
   };
 }
