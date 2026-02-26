@@ -5,6 +5,7 @@ import type {
   ResearchFindings,
   CaseMetadata,
 } from "../pipeline/types";
+import { numberLines } from "../utils/line-numbers";
 
 export const SYNTHESIS_SYSTEM = `You are a senior media law and content policy analyst producing the final review report for a true crime documentary script. You merge legal analysis, YouTube policy compliance, and case research into a clear, actionable verdict. Return ONLY valid JSON.`;
 
@@ -53,13 +54,13 @@ Return this JSON:
     "legal": "low|medium|high"
   },
   "criticalEdits": [{
-    "line": null,
+    "line": 42,
     "original": "original text",
     "suggested": "safer version",
     "reason": "why this must change"
   }],
   "recommendedEdits": [{
-    "line": null,
+    "line": 42,
     "original": "original text",
     "suggested": "better version",
     "reason": "why this should change"
@@ -73,6 +74,6 @@ Return this JSON:
   "policyFlags": ${JSON.stringify(policyFlags)}
 }
 
-FULL SCRIPT:
-${script}`;
+FULL SCRIPT (with line numbers):
+${numberLines(script)}`;
 }

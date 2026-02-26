@@ -1,15 +1,17 @@
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/db";
 import { runPipeline } from "@/lib/pipeline/orchestrator";
+import { parseGoogleDocsUrl, fetchGoogleDocText } from "@/lib/google-docs/fetch";
 import type { CaseMetadata, StageUpdate } from "@/lib/pipeline/types";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300; // 5 min for Railway
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
   const {
-    script,
+    script: rawScript,
+    gdocUrl,
     state,
     caseStatus,
     hasMinors,
@@ -18,9 +20,30 @@ export async function POST(req: NextRequest) {
     thumbnailDesc,
   } = body;
 
+  // Resolve script text from either direct paste or Google Doc URL
+  let script = rawScript;
+  let sourceUrl: string | undefined;
+
+  if (!script && gdocUrl) {
+    const docId = parseGoogleDocsUrl(gdocUrl);
+    if (!docId) {
+      return Response.json(
+        { error: "Invalid Google Docs URL" },
+        { status: 400 }
+      );
+    }
+    try {
+      script = await fetchGoogleDocText(docId);
+      sourceUrl = gdocUrl;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to fetch document";
+      return Response.json({ error: msg }, { status: 422 });
+    }
+  }
+
   if (!script || !state || !caseStatus) {
     return Response.json(
-      { error: "script, state, and caseStatus are required" },
+      { error: "script (or gdocUrl), state, and caseStatus are required" },
       { status: 400 }
     );
   }
@@ -34,10 +57,10 @@ export async function POST(req: NextRequest) {
     thumbnailDesc,
   };
 
-  // Create review record
   const review = await prisma.review.create({
     data: {
       scriptText: script,
+      sourceUrl,
       caseState: state,
       caseStatus,
       hasMinors: metadata.hasMinors,
@@ -48,7 +71,6 @@ export async function POST(req: NextRequest) {
     },
   });
 
-  // SSE stream
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {

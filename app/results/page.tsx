@@ -3,15 +3,24 @@
 import { useEffect, useState, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import type { SynthesisReport, LegalFlag, PolicyFlag } from "@/lib/pipeline/types";
+import AnnotatedScriptView from "./components/AnnotatedScriptView";
 
 interface ReviewData {
   id: string;
   createdAt: string;
   scriptTitle: string | null;
+  scriptText: string;
+  sourceUrl: string | null;
   caseState: string;
   caseStatus: string;
+  hasMinors: boolean;
   synthesis: SynthesisReport | null;
   legalFlags: LegalFlag[] | null;
+  legalCrossValidation: {
+    claude: LegalFlag[];
+    gpt: LegalFlag[];
+    perplexity: LegalFlag[];
+  } | null;
   youtubeFlags: PolicyFlag[] | null;
   parsedEntities: Record<string, unknown> | null;
   researchData: Record<string, unknown> | null;
@@ -53,7 +62,6 @@ function formatReportText(data: ReviewData): string {
     lines.push(report.summary);
     lines.push("");
 
-    // Risk Dashboard
     if (report.riskDashboard) {
       lines.push("── RISK DASHBOARD ──");
       for (const [key, val] of Object.entries(report.riskDashboard)) {
@@ -62,7 +70,6 @@ function formatReportText(data: ReviewData): string {
       lines.push("");
     }
 
-    // Critical Edits
     if (report.criticalEdits?.length > 0) {
       lines.push("── CRITICAL EDITS ──");
       for (const edit of report.criticalEdits) {
@@ -73,7 +80,6 @@ function formatReportText(data: ReviewData): string {
       }
     }
 
-    // Recommended Edits
     if (report.recommendedEdits?.length > 0) {
       lines.push("── RECOMMENDED EDITS ──");
       for (const edit of report.recommendedEdits) {
@@ -84,7 +90,6 @@ function formatReportText(data: ReviewData): string {
       }
     }
 
-    // Legal Flags
     if (report.legalFlags?.length > 0) {
       lines.push("── LEGAL FLAGS ──");
       for (const flag of report.legalFlags) {
@@ -98,7 +103,6 @@ function formatReportText(data: ReviewData): string {
       }
     }
 
-    // Policy Flags
     if (report.policyFlags?.length > 0) {
       lines.push("── YOUTUBE POLICY FLAGS ──");
       for (const flag of report.policyFlags) {
@@ -111,7 +115,6 @@ function formatReportText(data: ReviewData): string {
       }
     }
 
-    // EDSA Checklist
     if (report.edsaChecklist?.length > 0) {
       lines.push("── EDSA CHECKLIST ──");
       for (const item of report.edsaChecklist) {
@@ -124,13 +127,15 @@ function formatReportText(data: ReviewData): string {
   return lines.join("\n");
 }
 
+type TabKey = "overview" | "script" | "legal" | "youtube" | "research" | "raw";
+
 function ResultsContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const id = searchParams.get("id");
   const [data, setData] = useState<ReviewData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"overview" | "legal" | "youtube" | "research" | "raw">("overview");
+  const [activeTab, setActiveTab] = useState<TabKey>("overview");
   const [copied, setCopied] = useState<"report" | "link" | null>(null);
 
   useEffect(() => {
@@ -149,6 +154,8 @@ function ResultsContent() {
   if (!data) return <div className="p-8 text-[var(--red)]">Review not found</div>;
 
   const report = data.synthesis;
+  const allLegalFlags = report?.legalFlags ?? data.legalFlags ?? [];
+  const allPolicyFlags = report?.policyFlags ?? data.youtubeFlags ?? [];
 
   return (
     <div className="min-h-screen p-4 max-w-6xl mx-auto">
@@ -163,6 +170,11 @@ function ResultsContent() {
           </div>
           <p className="text-xs text-[var(--text-dim)] mt-1">
             {data.caseState} // {data.caseStatus.toUpperCase()} // {new Date(data.createdAt).toLocaleString()}
+            {data.sourceUrl && data.sourceUrl.startsWith("https://") && (
+              <span className="ml-2 text-[var(--text-dim)]">
+                // <a href={data.sourceUrl} target="_blank" rel="noopener noreferrer" className="underline hover:text-[var(--text)]">Google Doc</a>
+              </span>
+            )}
           </p>
         </div>
         <div className="flex gap-2">
@@ -246,7 +258,7 @@ function ResultsContent() {
 
       {/* Tabs */}
       <div className="flex gap-0 border-b border-[var(--border)] mb-4">
-        {(["overview", "legal", "youtube", "research", "raw"] as const).map((tab) => (
+        {(["overview", "script", "legal", "youtube", "research", "raw"] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -265,7 +277,6 @@ function ResultsContent() {
       <div className="min-h-[400px]">
         {activeTab === "overview" && report && (
           <div className="space-y-6">
-            {/* Critical Edits */}
             {report.criticalEdits?.length > 0 && (
               <section>
                 <h3 className="text-xs uppercase tracking-wider text-[var(--red)] mb-3 flex items-center gap-2">
@@ -285,7 +296,6 @@ function ResultsContent() {
               </section>
             )}
 
-            {/* Recommended Edits */}
             {report.recommendedEdits?.length > 0 && (
               <section>
                 <h3 className="text-xs uppercase tracking-wider text-[var(--yellow)] mb-3 flex items-center gap-2">
@@ -305,7 +315,6 @@ function ResultsContent() {
               </section>
             )}
 
-            {/* EDSA Checklist */}
             {report.edsaChecklist?.length > 0 && (
               <section>
                 <h3 className="text-xs uppercase tracking-wider text-[var(--text-dim)] mb-3">
@@ -334,50 +343,124 @@ function ResultsContent() {
           </div>
         )}
 
+        {activeTab === "script" && data.scriptText && (
+          <AnnotatedScriptView
+            scriptText={data.scriptText}
+            legalFlags={allLegalFlags}
+            policyFlags={allPolicyFlags}
+            state={data.caseState}
+            caseStatus={data.caseStatus}
+            hasMinors={data.hasMinors}
+          />
+        )}
+
         {activeTab === "legal" && (
           <div className="space-y-2">
-            {(report?.legalFlags ?? data.legalFlags ?? []).length === 0 ? (
+            {/* Cross-validation summary */}
+            {data.legalCrossValidation && (
+              <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 mb-4">
+                <div className="text-xs text-[var(--text-dim)] uppercase tracking-wider mb-2">
+                  Cross-Validation Summary (3-Model)
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-[10px]">
+                  <div>
+                    <span className="text-[var(--text-dim)]">Claude: </span>
+                    <span className="text-[var(--text-bright)]">{data.legalCrossValidation.claude.length} flags</span>
+                  </div>
+                  <div>
+                    <span className="text-[var(--text-dim)]">GPT: </span>
+                    <span className="text-[var(--text-bright)]">{data.legalCrossValidation.gpt.length} flags</span>
+                  </div>
+                  <div>
+                    <span className="text-[var(--text-dim)]">Perplexity: </span>
+                    <span className="text-[var(--text-bright)]">{data.legalCrossValidation.perplexity.length} flags</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {allLegalFlags.length === 0 ? (
               <p className="text-xs text-[var(--text-dim)]">No legal flags identified.</p>
             ) : (
-              (report?.legalFlags ?? data.legalFlags ?? []).map((flag: LegalFlag, i: number) => (
-                <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="w-2 h-2" style={{ background: sevColor(flag.severity) }} />
-                    <span className="text-xs uppercase" style={{ color: sevColor(flag.severity) }}>
-                      {flag.severity}
-                    </span>
-                    <span className="text-[10px] text-[var(--text-dim)] uppercase">
-                      {flag.riskType.replaceAll("_", " ")}
-                    </span>
-                    <span className="text-[10px] text-[var(--text-dim)]">
-                      — {flag.person}
-                    </span>
-                    {flag.counselReview && (
-                      <span className="text-[10px] text-[var(--red)] border border-[var(--red)] px-1">
-                        COUNSEL
+              allLegalFlags.map((flag: LegalFlag, i: number) => {
+                const isCrossValidated = "agreementCount" in flag;
+                const cv = isCrossValidated ? (flag as unknown as {
+                  agreementCount: number;
+                  models: string[];
+                  originalSeverities: Record<string, string>;
+                }) : null;
+
+                return (
+                  <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+                    <div className="flex items-center gap-2 mb-2 flex-wrap">
+                      <span className="w-2 h-2" style={{ background: sevColor(flag.severity) }} />
+                      <span className="text-xs uppercase" style={{ color: sevColor(flag.severity) }}>
+                        {flag.severity}
                       </span>
+                      <span className="text-[10px] text-[var(--text-dim)] uppercase">
+                        {flag.riskType.replaceAll("_", " ")}
+                      </span>
+                      <span className="text-[10px] text-[var(--text-dim)]">
+                        — {flag.person}
+                      </span>
+                      {flag.line && (
+                        <span className="text-[10px] text-[var(--text-dim)] border border-[var(--border)] px-1">
+                          L{flag.line}
+                        </span>
+                      )}
+                      {flag.counselReview && (
+                        <span className="text-[10px] text-[var(--red)] border border-[var(--red)] px-1">
+                          COUNSEL
+                        </span>
+                      )}
+                      {cv && (
+                        <span
+                          className="text-[10px] border px-1"
+                          style={{
+                            color: cv.agreementCount >= 3 ? "var(--red)" : cv.agreementCount >= 2 ? "var(--yellow)" : "var(--text-dim)",
+                            borderColor: cv.agreementCount >= 3 ? "var(--red)" : cv.agreementCount >= 2 ? "var(--yellow)" : "var(--border)",
+                          }}
+                        >
+                          {cv.agreementCount}/3 MODELS
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-[var(--text)] mb-1">&quot;{flag.text}&quot;</div>
+                    <div className="text-xs text-[var(--text-dim)] mb-1 whitespace-pre-wrap">{flag.reasoning}</div>
+                    {flag.stateCitation && (
+                      <div className="text-[10px] text-[var(--text-dim)]">Cite: {flag.stateCitation}</div>
+                    )}
+                    <div className="text-xs text-[var(--green)] mt-1">Safer: {flag.saferRewrite}</div>
+                    {cv && (
+                      <div className="mt-2 pt-2 border-t border-[var(--border)]">
+                        <div className="text-[10px] text-[var(--text-dim)] uppercase mb-1">Per-Model Severity</div>
+                        <div className="flex gap-3 text-[10px]">
+                          {cv.models.map((m) => (
+                            <span key={m}>
+                              <span className="text-[var(--text-dim)]">{m}: </span>
+                              <span style={{ color: sevColor(cv.originalSeverities[m]) }}>
+                                {cv.originalSeverities[m]}
+                              </span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
                     )}
                   </div>
-                  <div className="text-xs text-[var(--text)] mb-1">&quot;{flag.text}&quot;</div>
-                  <div className="text-xs text-[var(--text-dim)] mb-1">{flag.reasoning}</div>
-                  {flag.stateCitation && (
-                    <div className="text-[10px] text-[var(--text-dim)]">Cite: {flag.stateCitation}</div>
-                  )}
-                  <div className="text-xs text-[var(--green)] mt-1">Safer: {flag.saferRewrite}</div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         )}
 
         {activeTab === "youtube" && (
           <div className="space-y-2">
-            {(report?.policyFlags ?? data.youtubeFlags ?? []).length === 0 ? (
+            {allPolicyFlags.length === 0 ? (
               <p className="text-xs text-[var(--text-dim)]">No YouTube policy flags identified.</p>
             ) : (
-              (report?.policyFlags ?? data.youtubeFlags ?? []).map((flag: PolicyFlag, i: number) => (
+              allPolicyFlags.map((flag: PolicyFlag, i: number) => (
                 <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
-                  <div className="flex items-center gap-2 mb-2">
+                  <div className="flex items-center gap-2 mb-2 flex-wrap">
                     <span className="w-2 h-2" style={{ background: sevColor(flag.severity) }} />
                     <span className="text-xs uppercase" style={{ color: sevColor(flag.severity) }}>
                       {flag.severity}
@@ -385,6 +468,11 @@ function ResultsContent() {
                     <span className="text-[10px] text-[var(--text-dim)] uppercase">
                       {flag.category.replace(/_/g, " ")}
                     </span>
+                    {flag.line && (
+                      <span className="text-[10px] text-[var(--text-dim)] border border-[var(--border)] px-1">
+                        L{flag.line}
+                      </span>
+                    )}
                     <span
                       className="text-[10px] uppercase px-1 border"
                       style={{
@@ -424,7 +512,7 @@ function ResultsContent() {
         {activeTab === "raw" && (
           <pre className="text-xs text-[var(--text)] bg-[var(--bg-surface)] border border-[var(--border)] p-4 overflow-auto max-h-[600px] whitespace-pre-wrap">
             {JSON.stringify(
-              { synthesis: data.synthesis, legalFlags: data.legalFlags, youtubeFlags: data.youtubeFlags, parsedEntities: data.parsedEntities, researchData: data.researchData },
+              { synthesis: data.synthesis, legalFlags: data.legalFlags, legalCrossValidation: data.legalCrossValidation, youtubeFlags: data.youtubeFlags, parsedEntities: data.parsedEntities, researchData: data.researchData },
               null,
               2
             )}

@@ -56,6 +56,13 @@ export interface LegalFlag {
   confidence: number;
 }
 
+export interface CrossValidatedLegalFlag extends LegalFlag {
+  agreementCount: number;
+  models: string[];
+  originalSeverities: Record<string, string>;
+  crossValidated: true;
+}
+
 export interface PolicyFlag {
   line?: number;
   text: string;

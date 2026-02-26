@@ -36,7 +36,11 @@ interface StageStatus {
 
 export default function Home() {
   const router = useRouter();
+  const [inputMode, setInputMode] = useState<"paste" | "gdoc">("paste");
   const [script, setScript] = useState("");
+  const [gdocUrl, setGdocUrl] = useState("");
+  const [gdocFetching, setGdocFetching] = useState(false);
+  const [gdocPreview, setGdocPreview] = useState<{ text: string; lineCount: number; charCount: number } | null>(null);
   const [state, setState] = useState("California");
   const [caseStatus, setCaseStatus] = useState("convicted");
   const [hasMinors, setHasMinors] = useState(false);
@@ -54,13 +58,35 @@ export default function Home() {
     );
   };
 
+  const fetchGdoc = async () => {
+    if (!gdocUrl.trim()) return;
+    setGdocFetching(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/gdoc-preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: gdocUrl }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setGdocPreview(data);
+      setScript(data.text);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch doc");
+    } finally {
+      setGdocFetching(false);
+    }
+  };
+
   const handleSubmit = async () => {
-    if (!script.trim()) return;
+    const scriptText = inputMode === "gdoc" ? gdocPreview?.text || script : script;
+    if (!scriptText.trim()) return;
     setRunning(true);
     setError(null);
     setStages([
       { stage: 0, name: "SCRIPT PARSER", status: "pending" },
-      { stage: 1, name: "LEGAL REVIEW", status: "pending" },
+      { stage: 1, name: "LEGAL REVIEW (3-MODEL)", status: "pending" },
       { stage: 2, name: "YOUTUBE POLICY", status: "pending" },
       { stage: 3, name: "CASE RESEARCH", status: "pending" },
       { stage: 4, name: "SYNTHESIS", status: "pending" },
@@ -69,18 +95,25 @@ export default function Home() {
     abortRef.current = new AbortController();
 
     try {
+      const body: Record<string, unknown> = {
+        state,
+        caseStatus,
+        hasMinors,
+        footageTypes,
+        videoTitle: videoTitle || undefined,
+        thumbnailDesc: thumbnailDesc || undefined,
+      };
+
+      if (inputMode === "gdoc" && gdocUrl && !gdocPreview) {
+        body.gdocUrl = gdocUrl;
+      } else {
+        body.script = scriptText;
+      }
+
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          script,
-          state,
-          caseStatus,
-          hasMinors,
-          footageTypes,
-          videoTitle: videoTitle || undefined,
-          thumbnailDesc: thumbnailDesc || undefined,
-        }),
+        body: JSON.stringify(body),
         signal: abortRef.current.signal,
       });
 
@@ -112,7 +145,7 @@ export default function Home() {
               setStages((prev) =>
                 prev.map((s) =>
                   s.stage === data.stage
-                    ? { ...s, status: data.status, error: data.error }
+                    ? { ...s, status: data.status, name: data.name || s.name, error: data.error }
                     : s
                 )
               );
@@ -136,9 +169,10 @@ export default function Home() {
     }
   };
 
+  const currentScript = inputMode === "gdoc" ? gdocPreview?.text || "" : script;
+
   return (
     <div className="min-h-screen p-4 max-w-5xl mx-auto">
-      {/* Header */}
       <header className="border-b border-[var(--border)] pb-4 mb-6">
         <div className="flex items-center gap-3">
           <div className="w-2 h-2 bg-[var(--green)]" />
@@ -154,20 +188,82 @@ export default function Home() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left: Script Input */}
         <div className="lg:col-span-2">
-          <label className="text-xs text-[var(--text-dim)] uppercase tracking-wider mb-2 block">
-            Script Content
-          </label>
-          <textarea
-            value={script}
-            onChange={(e) => setScript(e.target.value)}
-            placeholder="Paste your documentary script here..."
-            className="w-full h-[500px] resize-none text-sm leading-relaxed"
-            disabled={running}
-          />
-          <div className="flex justify-between mt-2 text-xs text-[var(--text-dim)]">
-            <span>{script.split("\n").length} lines</span>
-            <span>{script.length.toLocaleString()} chars</span>
+          {/* Input Mode Toggle */}
+          <div className="flex items-center gap-0 mb-3">
+            <button
+              onClick={() => setInputMode("paste")}
+              disabled={running}
+              className={`px-4 py-1.5 text-xs uppercase tracking-wider border border-[var(--border)] ${
+                inputMode === "paste"
+                  ? "bg-[var(--bg-elevated)] text-[var(--text-bright)] border-[var(--text-dim)]"
+                  : "text-[var(--text-dim)] hover:text-[var(--text)]"
+              }`}
+            >
+              Paste
+            </button>
+            <button
+              onClick={() => setInputMode("gdoc")}
+              disabled={running}
+              className={`px-4 py-1.5 text-xs uppercase tracking-wider border border-[var(--border)] border-l-0 ${
+                inputMode === "gdoc"
+                  ? "bg-[var(--bg-elevated)] text-[var(--text-bright)] border-[var(--text-dim)]"
+                  : "text-[var(--text-dim)] hover:text-[var(--text)]"
+              }`}
+            >
+              Google Doc
+            </button>
           </div>
+
+          {inputMode === "paste" ? (
+            <>
+              <textarea
+                value={script}
+                onChange={(e) => setScript(e.target.value)}
+                placeholder="Paste your documentary script here..."
+                className="w-full h-[500px] resize-none text-sm leading-relaxed"
+                disabled={running}
+              />
+              <div className="flex justify-between mt-2 text-xs text-[var(--text-dim)]">
+                <span>{script.split("\n").length} lines</span>
+                <span>{script.length.toLocaleString()} chars</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex gap-2 mb-3">
+                <input
+                  value={gdocUrl}
+                  onChange={(e) => { setGdocUrl(e.target.value); setGdocPreview(null); }}
+                  placeholder="https://docs.google.com/document/d/..."
+                  className="flex-1"
+                  disabled={running || gdocFetching}
+                />
+                <button
+                  onClick={fetchGdoc}
+                  disabled={running || gdocFetching || !gdocUrl.trim()}
+                  className="px-4 py-2 text-xs uppercase tracking-wider border border-[var(--border)] hover:bg-[var(--bg-elevated)] disabled:opacity-30"
+                >
+                  {gdocFetching ? "FETCHING..." : "FETCH"}
+                </button>
+              </div>
+              {gdocPreview ? (
+                <>
+                  <div className="text-xs text-[var(--green)] mb-2">
+                    Document loaded: {gdocPreview.lineCount} lines, {gdocPreview.charCount.toLocaleString()} chars
+                  </div>
+                  <textarea
+                    value={gdocPreview.text}
+                    readOnly
+                    className="w-full h-[460px] resize-none text-sm leading-relaxed opacity-70"
+                  />
+                </>
+              ) : (
+                <div className="w-full h-[460px] border border-[var(--border)] bg-[var(--bg-surface)] flex items-center justify-center text-xs text-[var(--text-dim)]">
+                  Enter a Google Docs URL and click FETCH to load the script
+                </div>
+              )}
+            </>
+          )}
         </div>
 
         {/* Right: Metadata */}
@@ -268,13 +364,12 @@ export default function Home() {
 
           <button
             onClick={handleSubmit}
-            disabled={running || !script.trim()}
+            disabled={running || !currentScript.trim()}
             className="w-full py-3 text-sm uppercase tracking-widest border border-[var(--border)] text-[var(--text-bright)] bg-[var(--bg-surface)] hover:bg-[var(--bg-elevated)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             {running ? "ANALYZING..." : "ANALYZE SCRIPT"}
           </button>
 
-          {/* Stage Progress */}
           {stages.length > 0 && (
             <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 space-y-2">
               <div className="text-xs text-[var(--text-dim)] uppercase tracking-wider mb-2">

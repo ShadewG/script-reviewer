@@ -1,6 +1,7 @@
 import type { ParsedScript, ResearchFindings, CaseMetadata } from "../pipeline/types";
+import { numberLines } from "../utils/line-numbers";
 
-export const LEGAL_SYSTEM = `You are a defamation and media law risk analyst for documentary content. You analyze scripts for legal risk with precision, citing specific state law provisions. You are thorough but do not over-flag clearly protected speech. Return ONLY valid JSON.`;
+export const LEGAL_SYSTEM = `You are a defamation and media law risk analyst for documentary content. You analyze scripts for legal risk with precision, citing specific state law provisions. You are thorough but do not over-flag clearly protected speech. The script is provided with line numbers — you MUST include the exact line number for every flag. Return ONLY valid JSON.`;
 
 export function buildLegalPrompt(
   script: string,
@@ -45,9 +46,9 @@ B. PRIVACY TORT RISK:
 - Intrusion, public disclosure of private facts, false light, appropriation
 - Flag: addresses, phone numbers, medical details, sexual assault details beyond public record, minor identities
 
-Return JSON array of flags:
+Return JSON array of flags. IMPORTANT: "line" MUST be the exact line number from the script — NEVER null:
 [{
-  "line": null,
+  "line": 42,
   "text": "exact script text",
   "person": "name",
   "riskType": "defamation|privacy|false_light|appropriation",
@@ -61,6 +62,18 @@ Return JSON array of flags:
 
 If no flags, return empty array [].
 
-FULL SCRIPT:
-${script}`;
+FULL SCRIPT (with line numbers):
+${numberLines(script)}`;
+}
+
+export function buildLegalPromptForPerplexity(
+  script: string,
+  parsed: ParsedScript,
+  metadata: CaseMetadata,
+  stateLaw: Record<string, unknown>,
+  research?: ResearchFindings
+): string {
+  return `${LEGAL_SYSTEM}
+
+${buildLegalPrompt(script, parsed, metadata, stateLaw, research)}`;
 }

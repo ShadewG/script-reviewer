@@ -69,6 +69,7 @@ model Review {
 
   scriptTitle   String?
   scriptText    String
+  sourceUrl     String?  // Google Docs URL if imported
   caseState     String
   caseStatus    String  // convicted, charged, suspect, acquitted, unsolved
   hasMinors     Boolean @default(false)
@@ -77,11 +78,12 @@ model Review {
   thumbnailDesc String?
 
   // Stage outputs
-  parsedEntities Json?
-  legalFlags     Json?
-  youtubeFlags   Json?
-  researchData   Json?
-  synthesis      Json?
+  parsedEntities      Json?
+  legalFlags          Json?
+  legalCrossValidation Json?  // raw per-model results for audit
+  youtubeFlags        Json?
+  researchData        Json?
+  synthesis           Json?
 
   status    String @default("pending") // pending, processing, completed, failed
   error     String?

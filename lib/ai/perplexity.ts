@@ -19,3 +19,12 @@ export async function callSonar(query: string): Promise<string> {
   });
   return res.choices[0]?.message?.content ?? "";
 }
+
+export async function callSonarLegal(prompt: string): Promise<string> {
+  const res = await getPerplexity().chat.completions.create({
+    model: "sonar-pro",
+    messages: [{ role: "user", content: prompt }],
+    temperature: 0.1,
+  });
+  return res.choices[0]?.message?.content ?? "";
+}

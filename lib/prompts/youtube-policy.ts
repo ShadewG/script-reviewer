@@ -1,5 +1,6 @@
 import type { ParsedScript, CaseMetadata } from "../pipeline/types";
 import { buildPolicyPromptContext } from "../policies/youtube-policies";
+import { numberLines } from "../utils/line-numbers";
 
 // Build the policy reference once at module load
 const POLICY_CONTEXT = buildPolicyPromptContext({
@@ -7,7 +8,7 @@ const POLICY_CONTEXT = buildPolicyPromptContext({
   includeMonetization: true,
 });
 
-export const YOUTUBE_SYSTEM = `You are a YouTube Policy Compliance Reviewer specialized in true crime documentary content. You have been given the COMPLETE YouTube policy database below. Use EXACT policy quotes from this database when flagging issues. Return ONLY valid JSON.
+export const YOUTUBE_SYSTEM = `You are a YouTube Policy Compliance Reviewer specialized in true crime documentary content. You have been given the COMPLETE YouTube policy database below. Use EXACT policy quotes from this database when flagging issues. The script is provided with line numbers — you MUST include the exact line number for every flag. Return ONLY valid JSON.
 
 ${POLICY_CONTEXT}`;
 
@@ -68,9 +69,9 @@ CHECK ALL OF THESE AGAINST THE POLICY DATABASE:
 
 For each flag, CITE the specific policy from the database with exact quotes.
 
-Return JSON array of flags:
+Return JSON array of flags. IMPORTANT: "line" MUST be the exact line number from the script — NEVER null:
 [{
-  "line": null,
+  "line": 42,
   "text": "exact script text or metadata element",
   "category": "community_guidelines|age_restriction|monetization|edsa_context|metadata",
   "severity": "low|medium|high|severe",
@@ -83,6 +84,6 @@ Return JSON array of flags:
 
 If no flags, return empty array [].
 
-FULL SCRIPT:
-${script}`;
+FULL SCRIPT (with line numbers):
+${numberLines(script)}`;
 }

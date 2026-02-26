@@ -1,7 +1,9 @@
-export const PARSER_SYSTEM = `You are a script parser for true crime documentary content. Extract structured data from the script exactly as instructed. Return ONLY valid JSON, no markdown fences, no explanation.`;
+import { numberLines } from "../utils/line-numbers";
+
+export const PARSER_SYSTEM = `You are a script parser for true crime documentary content. Extract structured data from the script exactly as instructed. The script is provided with line numbers (e.g. "1: text"). ALWAYS include accurate line numbers in your output. Return ONLY valid JSON, no markdown fences, no explanation.`;
 
 export function buildParserPrompt(script: string): string {
-  return `Parse this crime documentary script and extract:
+  return `Parse this crime documentary script and extract. Line numbers are provided — use them EXACTLY in your output.
 
 1. ALL named individuals (full names, partial names, nicknames):
    - role: suspect | victim | witness | officer | attorney | family | other
@@ -38,6 +40,6 @@ Return this exact JSON structure:
   "timeline": []
 }
 
-SCRIPT:
-${script}`;
+SCRIPT (with line numbers):
+${numberLines(script)}`;
 }

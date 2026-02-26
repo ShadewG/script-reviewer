@@ -3,7 +3,6 @@ import { callClaude } from "../ai/anthropic";
 import { callSonar } from "../ai/perplexity";
 import { searchDockets } from "../ai/courtlistener";
 import { PARSER_SYSTEM, buildParserPrompt } from "../prompts/parser";
-import { LEGAL_SYSTEM, buildLegalPrompt } from "../prompts/legal-review";
 import { YOUTUBE_SYSTEM, buildYoutubePrompt } from "../prompts/youtube-policy";
 import {
   buildCaseResearchQueries,
@@ -11,6 +10,7 @@ import {
   buildResearchSynthesisPrompt,
 } from "../prompts/case-research";
 import { SYNTHESIS_SYSTEM, buildSynthesisPrompt } from "../prompts/synthesis";
+import { runMultiModelLegalReview } from "./cross-validate";
 import { prisma } from "../db";
 import type {
   CaseMetadata,
@@ -24,9 +24,7 @@ import type {
 
 function safeJsonParse<T>(text: string): T {
   let cleaned = text.trim();
-  // Strip markdown code fences (various formats)
   cleaned = cleaned.replace(/^```[\w]*\s*\n?/, "").replace(/\n?```\s*$/, "");
-  // If still not starting with [ or {, try to find JSON in the text
   if (!cleaned.startsWith("[") && !cleaned.startsWith("{")) {
     const jsonMatch = cleaned.match(/[\[{][\s\S]*[\]}]/);
     if (jsonMatch) cleaned = jsonMatch[0];
@@ -88,7 +86,6 @@ export async function runPipeline(
       const queries = buildCaseResearchQueries(parsed, metadata);
       const results: string[] = [];
 
-      // Perplexity queries in parallel
       const sonarResults = await Promise.allSettled(
         queries.map((q) => callSonar(q))
       );
@@ -96,7 +93,6 @@ export async function runPipeline(
         if (r.status === "fulfilled") results.push(r.value);
       }
 
-      // CourtListener lookup
       const suspects = parsed.entities.filter((e) => e.role === "suspect");
       if (suspects.length > 0) {
         try {
@@ -109,7 +105,7 @@ export async function runPipeline(
             );
           }
         } catch {
-          // CourtListener is optional, continue without it
+          // CourtListener is optional
         }
       }
 
@@ -118,7 +114,6 @@ export async function runPipeline(
         return null;
       }
 
-      // Synthesize research
       const synthResult = await callGPT(
         RESEARCH_SYNTHESIS_SYSTEM,
         buildResearchSynthesisPrompt(results, metadata)
@@ -155,11 +150,10 @@ export async function runPipeline(
     });
   }
 
-  // --- Stage 1: Legal Review (needs research results) ---
-  emit({ stage: 1, name: "Legal Review", status: "running" });
+  // --- Stage 1: Legal Review — Multi-Model Cross-Validation ---
+  emit({ stage: 1, name: "Legal Review (3-Model)", status: "running" });
   let legalFlags: LegalFlag[] = [];
   try {
-    // Fetch state law from DB
     const stateLaw = await prisma.stateDefamationLaw.findFirst({
       where: {
         OR: [
@@ -169,26 +163,27 @@ export async function runPipeline(
       },
     });
 
-    const legalResult = await callClaude(
-      LEGAL_SYSTEM,
-      buildLegalPrompt(
-        script,
-        parsed,
-        metadata,
-        (stateLaw as never) ?? { note: "State law not in database, use general US defamation principles" },
-        research ?? undefined
-      )
+    const { flags, raw } = await runMultiModelLegalReview(
+      script,
+      parsed,
+      metadata,
+      (stateLaw as never) ?? { note: "State law not in database, use general US defamation principles" },
+      research ?? undefined
     );
-    legalFlags = safeJsonParse<LegalFlag[]>(legalResult);
+
+    legalFlags = flags;
+
     await prisma.review.update({
       where: { id: reviewId },
-      data: { legalFlags: legalFlags as never[] },
+      data: {
+        legalFlags: legalFlags as never[],
+        legalCrossValidation: raw as never,
+      },
     });
-    emit({ stage: 1, name: "Legal Review", status: "complete", data: legalFlags });
+    emit({ stage: 1, name: "Legal Review (3-Model)", status: "complete", data: legalFlags });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Legal review failed";
-    emit({ stage: 1, name: "Legal Review", status: "error", error: msg });
-    // Mark that legal review failed so synthesis knows
+    emit({ stage: 1, name: "Legal Review (3-Model)", status: "error", error: msg });
     legalFlags = [{
       text: "LEGAL REVIEW STAGE FAILED",
       person: "N/A",
@@ -223,11 +218,10 @@ export async function runPipeline(
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Synthesis failed";
     emit({ stage: 4, name: "Synthesis", status: "error", error: msg });
-    // Return a fallback report
     report = {
       verdict: "borderline",
       riskScore: 50,
-      summary: "Synthesis stage encountered an error. Review individual stage results.",
+      summary: `Synthesis stage error: ${msg}. Review individual stage results below.`,
       riskDashboard: {
         communityGuidelines: legalFlags.length > 0 ? "medium" : "low",
         ageRestriction: "medium",
