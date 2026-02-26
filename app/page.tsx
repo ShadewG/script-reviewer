@@ -469,7 +469,7 @@ export default function Home() {
 
           <button
             onClick={handleSubmit}
-            disabled={running || !currentScript.trim()}
+            disabled={running || uploading || !currentScript.trim()}
             className="w-full py-3 text-sm uppercase tracking-widest border border-[var(--border)] text-[var(--text-bright)] bg-[var(--bg-surface)] hover:bg-[var(--bg-elevated)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             {running ? "ANALYZING..." : "ANALYZE SCRIPT"}
