@@ -10,14 +10,15 @@ export async function callClaude(
   systemPrompt: string,
   userPrompt: string
 ): Promise<string> {
-  const res = await getAnthropic().messages.create({
+  const stream = getAnthropic().messages.stream({
     model: "claude-opus-4-6",
-    max_tokens: 32000,
+    max_tokens: 16000,
     system: systemPrompt,
     messages: [{ role: "user", content: userPrompt }],
     temperature: 0.2,
   });
-  const block = res.content[0];
+  const response = await stream.finalMessage();
+  const block = response.content[0];
   if (block.type === "text") return block.text;
   return "";
 }
