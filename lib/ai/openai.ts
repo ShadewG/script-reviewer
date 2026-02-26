@@ -27,7 +27,7 @@ export async function callGPT(
   userPrompt: string
 ): Promise<string> {
   const res = await getOpenAI().chat.completions.create({
-    model: "gpt-4.1",
+    model: "gpt-5.2",
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },

@@ -119,7 +119,7 @@ export async function runPipeline(
       }
 
       // Synthesize research
-      const synthResult = await callGPTMini(
+      const synthResult = await callGPT(
         RESEARCH_SYNTHESIS_SYSTEM,
         buildResearchSynthesisPrompt(results, metadata)
       );
