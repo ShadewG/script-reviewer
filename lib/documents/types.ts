@@ -7,21 +7,21 @@ export interface ExtractedPerson {
 
 export interface ExtractedEvent {
   description: string;
-  date?: string;
-  time?: string;
-  page?: number;
+  date?: string | null;
+  time?: string | null;
+  page?: number | null;
 }
 
 export interface ExtractedEvidence {
   type: string;
   description: string;
-  page?: number;
+  page?: number | null;
 }
 
 export interface ExtractedQuote {
   text: string;
   speaker: string;
-  page?: number;
+  page?: number | null;
 }
 
 export interface VerifiableFact {
@@ -39,5 +39,5 @@ export interface DocumentFacts {
   evidence: ExtractedEvidence[];
   quotes: ExtractedQuote[];
   verifiableFacts: VerifiableFact[];
-  rawTextPreview?: string;
+  rawTextPreview?: string | null;
 }
