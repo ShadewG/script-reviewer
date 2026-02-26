@@ -1,0 +1,92 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model StateDefamationLaw {
+  id    String @id @default(cuid())
+  state String @unique
+  abbrev String @unique
+
+  defamationDefinition String
+  defamationStatute    String?
+  standardOfFault      Json   // { publicFigure, privateFigure }
+  perSeCategories      Json   // string[]
+  perSeStatute         String?
+
+  libelSOL              String
+  slanderSOL            String
+  solStatute            String?
+  discoveryRule         Boolean @default(false)
+  singlePublicationRule Boolean @default(true)
+
+  fairReportPrivilege Boolean @default(true)
+  fairReportScope     String?
+  fairReportStatute   String?
+  neutralReportage    Boolean @default(false)
+  neutralReportageNote String?
+  opinionPrivilege    String?
+  truthDefense        String  @default("complete_defense")
+  substantialTruth    Boolean @default(true)
+  retractionStatute   Boolean @default(false)
+  retractionDetails   String?
+
+  hasAntiSlapp       Boolean @default(false)
+  antiSlappGrade     String?
+  antiSlappStatute   String?
+  antiSlappScope     String?
+  antiSlappBurden    String?
+  antiSlappFeeShifting Boolean?
+  antiSlappAppeal    Boolean?
+
+  publicFigureTest   String?
+  limitedPurposePF   String?
+  involuntaryPF      Boolean?
+
+  privacyTortsRecognized Json   // string[]
+  falseLightRecognized   Boolean @default(true)
+  falseLightNote         String?
+
+  criminalDefamation    Boolean @default(false)
+  criminalDefStatute    String?
+  deadPersonDefamation  Boolean @default(false)
+  internetJurisdiction  String?
+
+  lastVerified DateTime @default(now())
+  sources      Json     // string[]
+  notes        String?
+
+  @@map("state_defamation_laws")
+}
+
+model Review {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  scriptTitle   String?
+  scriptText    String
+  caseState     String
+  caseStatus    String  // convicted, charged, suspect, acquitted, unsolved
+  hasMinors     Boolean @default(false)
+  footageTypes  Json?   // string[]
+  videoTitle    String?
+  thumbnailDesc String?
+
+  // Stage outputs
+  parsedEntities Json?
+  legalFlags     Json?
+  youtubeFlags   Json?
+  researchData   Json?
+  synthesis      Json?
+
+  status    String @default("pending") // pending, processing, completed, failed
+  error     String?
+  verdict   String? // publishable, borderline, not_publishable
+  riskScore Int?    // 0-100
+
+  @@map("reviews")
+}
