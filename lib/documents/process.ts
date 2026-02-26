@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { PDFDocument } from "pdf-lib";
 import type { DocumentFacts } from "./types";
 
 let _anthropic: Anthropic | null = null;
@@ -65,52 +66,43 @@ Focus on facts relevant to defamation and legal review:
 
 Be thorough but CONCISE — extract every verifiable fact, but keep descriptions SHORT (1-2 sentences max per item). Do NOT include long narrative summaries of individual events. Focus on extractable facts: names, dates, charges, cause of death, evidence types, key quotes. These will be cross-referenced against a documentary script to reduce false legal flags.`;
 
-export async function processDocument(
-  fileBuffer: Buffer,
-  fileName: string,
-  mimeType: string
-): Promise<DocumentFacts> {
-  const isImage = mimeType.startsWith("image/");
-  const isPdf = mimeType === "application/pdf";
+const MAX_PDF_PAGES = 100; // Anthropic API limit per document block
 
-  if (!isImage && !isPdf) {
-    throw new Error(
-      `Unsupported file type: ${mimeType}. Accepts PDF, PNG, JPG, WEBP.`
+/** Split a PDF into chunks of ≤ MAX_PDF_PAGES, returning each as a Buffer */
+async function splitPdf(
+  fileBuffer: Buffer
+): Promise<{ chunks: Buffer[]; totalPages: number }> {
+  const srcDoc = await PDFDocument.load(fileBuffer);
+  const totalPages = srcDoc.getPageCount();
+
+  if (totalPages <= MAX_PDF_PAGES) {
+    return { chunks: [fileBuffer], totalPages };
+  }
+
+  const chunks: Buffer[] = [];
+  for (let start = 0; start < totalPages; start += MAX_PDF_PAGES) {
+    const end = Math.min(start + MAX_PDF_PAGES, totalPages);
+    const chunkDoc = await PDFDocument.create();
+    const copied = await chunkDoc.copyPages(
+      srcDoc,
+      Array.from({ length: end - start }, (_, i) => start + i)
     );
+    for (const page of copied) chunkDoc.addPage(page);
+    const bytes = await chunkDoc.save();
+    chunks.push(Buffer.from(bytes));
   }
 
-  const base64 = fileBuffer.toString("base64");
-  const contentBlocks: Anthropic.Messages.ContentBlockParam[] = [];
+  console.log(
+    `[upload-docs] Split ${totalPages}-page PDF into ${chunks.length} chunks`
+  );
+  return { chunks, totalPages };
+}
 
-  if (isPdf) {
-    contentBlocks.push({
-      type: "document",
-      source: {
-        type: "base64",
-        media_type: "application/pdf",
-        data: base64,
-      },
-    } as Anthropic.Messages.ContentBlockParam);
-  } else {
-    contentBlocks.push({
-      type: "image",
-      source: {
-        type: "base64",
-        media_type: mimeType as
-          | "image/png"
-          | "image/jpeg"
-          | "image/webp"
-          | "image/gif",
-        data: base64,
-      },
-    });
-  }
-
-  contentBlocks.push({
-    type: "text",
-    text: `Extract all factual information from this document. File: ${fileName}`,
-  });
-
+/** Call Claude to extract facts from a single document (≤100 page PDF or image) */
+async function extractFromContent(
+  contentBlocks: Anthropic.Messages.ContentBlockParam[],
+  fileName: string
+): Promise<Record<string, unknown>> {
   let result: string;
   try {
     const stream = getAnthropic().messages.stream({
@@ -144,29 +136,24 @@ export async function processDocument(
     if (match) cleaned = match[0];
   }
 
-  let parsed: Record<string, unknown>;
   try {
-    parsed = JSON.parse(cleaned);
+    return JSON.parse(cleaned);
   } catch {
     // Fix truncated JSON: find last complete entry, close brackets
     try {
       let fixed = cleaned;
-      // Find the last successfully completed JSON value boundary
-      // Look for last complete array element or object property
       const lastGoodPoints = [
-        fixed.lastIndexOf("},"),       // end of object in array
-        fixed.lastIndexOf("],"),       // end of array in object
-        fixed.lastIndexOf('"],'),      // end of string array
-        fixed.lastIndexOf("true,"),    // end of boolean
-        fixed.lastIndexOf("false,"),   // end of boolean
+        fixed.lastIndexOf("},"),
+        fixed.lastIndexOf("],"),
+        fixed.lastIndexOf('"],'),
+        fixed.lastIndexOf("true,"),
+        fixed.lastIndexOf("false,"),
       ].filter((i) => i > 0);
 
       if (lastGoodPoints.length > 0) {
         const cutAt = Math.max(...lastGoodPoints);
-        // Cut after the complete value (keep the } or ] but drop the comma)
         fixed = fixed.slice(0, cutAt + 1);
       } else {
-        // Fallback: close any open strings
         const quoteCount = (fixed.match(/(?<!\\)"/g) || []).length;
         if (quoteCount % 2 !== 0) fixed += '"';
       }
@@ -178,25 +165,201 @@ export async function processDocument(
       const bracketCloses = (fixed.match(/\]/g) || []).length;
       for (let i = 0; i < braceOpens - braceCloses; i++) fixed += "}";
       for (let i = 0; i < bracketOpens - bracketCloses; i++) fixed += "]";
-      parsed = JSON.parse(fixed);
-      console.log(`[upload-docs] Recovered truncated JSON for "${fileName}" (${Object.keys(parsed).length} top-level keys)`);
+      const parsed = JSON.parse(fixed);
+      console.log(
+        `[upload-docs] Recovered truncated JSON for "${fileName}" (${Object.keys(parsed).length} keys)`
+      );
+      return parsed;
     } catch {
-      console.error(`[upload-docs] JSON parse failed for "${fileName}". Last 300 chars:`, cleaned.slice(-300));
+      console.error(
+        `[upload-docs] JSON parse failed for "${fileName}". Last 300 chars:`,
+        cleaned.slice(-300)
+      );
       throw new Error(
         `Failed to parse document extraction result for "${fileName}"`
       );
     }
   }
+}
+
+/** Merge multiple extraction results into a single DocumentFacts, deduplicating people by name */
+function mergeExtractions(
+  parts: Record<string, unknown>[],
+  fileName: string
+): DocumentFacts {
+  const people = new Map<string, DocumentFacts["people"][number]>();
+  const events: DocumentFacts["events"] = [];
+  const evidence: DocumentFacts["evidence"] = [];
+  const quotes: DocumentFacts["quotes"] = [];
+  const verifiableFacts: DocumentFacts["verifiableFacts"] = [];
+  const summaries: string[] = [];
+  let docType = "other";
+
+  for (const part of parts) {
+    if (part.docType && typeof part.docType === "string") docType = part.docType;
+    if (part.summary && typeof part.summary === "string")
+      summaries.push(part.summary);
+
+    for (const p of (part.people as DocumentFacts["people"]) ?? []) {
+      const existing = people.get(p.name);
+      if (existing) {
+        // Merge actions and pageRefs
+        const actionSet = new Set([...existing.actions, ...p.actions]);
+        existing.actions = [...actionSet];
+        existing.pageRefs = [
+          ...new Set([...existing.pageRefs, ...p.pageRefs]),
+        ].sort((a, b) => a - b);
+      } else {
+        people.set(p.name, { ...p });
+      }
+    }
+
+    events.push(...((part.events as DocumentFacts["events"]) ?? []));
+    evidence.push(...((part.evidence as DocumentFacts["evidence"]) ?? []));
+    quotes.push(...((part.quotes as DocumentFacts["quotes"]) ?? []));
+    verifiableFacts.push(
+      ...((part.verifiableFacts as DocumentFacts["verifiableFacts"]) ?? [])
+    );
+  }
+
+  // Deduplicate verifiable facts by claim text
+  const seenClaims = new Set<string>();
+  const uniqueFacts = verifiableFacts.filter((f) => {
+    const key = f.claim.toLowerCase().trim();
+    if (seenClaims.has(key)) return false;
+    seenClaims.add(key);
+    return true;
+  });
 
   return {
     fileName,
-    docType: (parsed.docType as string) ?? "other",
-    summary: (parsed.summary as string) ?? "",
-    people: (parsed.people as DocumentFacts["people"]) ?? [],
-    events: (parsed.events as DocumentFacts["events"]) ?? [],
-    evidence: (parsed.evidence as DocumentFacts["evidence"]) ?? [],
-    quotes: (parsed.quotes as DocumentFacts["quotes"]) ?? [],
-    verifiableFacts:
-      (parsed.verifiableFacts as DocumentFacts["verifiableFacts"]) ?? [],
+    docType,
+    summary: summaries.join(" "),
+    people: [...people.values()],
+    events,
+    evidence,
+    quotes,
+    verifiableFacts: uniqueFacts,
   };
+}
+
+export async function processDocument(
+  fileBuffer: Buffer,
+  fileName: string,
+  mimeType: string
+): Promise<DocumentFacts> {
+  const isImage = mimeType.startsWith("image/");
+  const isPdf = mimeType === "application/pdf";
+
+  if (!isImage && !isPdf) {
+    throw new Error(
+      `Unsupported file type: ${mimeType}. Accepts PDF, PNG, JPG, WEBP.`
+    );
+  }
+
+  // Images: single extraction call
+  if (isImage) {
+    const contentBlocks: Anthropic.Messages.ContentBlockParam[] = [
+      {
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: mimeType as
+            | "image/png"
+            | "image/jpeg"
+            | "image/webp"
+            | "image/gif",
+          data: fileBuffer.toString("base64"),
+        },
+      },
+      {
+        type: "text",
+        text: `Extract all factual information from this document. File: ${fileName}`,
+      },
+    ];
+    const parsed = await extractFromContent(contentBlocks, fileName);
+    return {
+      fileName,
+      docType: (parsed.docType as string) ?? "other",
+      summary: (parsed.summary as string) ?? "",
+      people: (parsed.people as DocumentFacts["people"]) ?? [],
+      events: (parsed.events as DocumentFacts["events"]) ?? [],
+      evidence: (parsed.evidence as DocumentFacts["evidence"]) ?? [],
+      quotes: (parsed.quotes as DocumentFacts["quotes"]) ?? [],
+      verifiableFacts:
+        (parsed.verifiableFacts as DocumentFacts["verifiableFacts"]) ?? [],
+    };
+  }
+
+  // PDF: split if > 100 pages, then process chunks in parallel
+  const { chunks, totalPages } = await splitPdf(fileBuffer);
+
+  const results = await Promise.allSettled(
+    chunks.map((chunk, idx) => {
+      const pageStart = idx * MAX_PDF_PAGES + 1;
+      const pageEnd = Math.min((idx + 1) * MAX_PDF_PAGES, totalPages);
+      const label =
+        chunks.length > 1
+          ? `${fileName} (pages ${pageStart}-${pageEnd})`
+          : fileName;
+
+      const contentBlocks: Anthropic.Messages.ContentBlockParam[] = [
+        {
+          type: "document",
+          source: {
+            type: "base64",
+            media_type: "application/pdf",
+            data: chunk.toString("base64"),
+          },
+        } as Anthropic.Messages.ContentBlockParam,
+        {
+          type: "text",
+          text: `Extract all factual information from this document. File: ${label}`,
+        },
+      ];
+      return extractFromContent(contentBlocks, label);
+    })
+  );
+
+  const parts: Record<string, unknown>[] = [];
+  const errors: string[] = [];
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    if (r.status === "fulfilled") {
+      parts.push(r.value);
+    } else {
+      const msg =
+        r.reason instanceof Error ? r.reason.message : "Chunk processing failed";
+      errors.push(msg);
+      console.error(
+        `[upload-docs] Chunk ${i + 1}/${chunks.length} failed for "${fileName}": ${msg}`
+      );
+    }
+  }
+
+  if (parts.length === 0) {
+    throw new Error(
+      `All chunks failed for "${fileName}": ${errors.join("; ")}`
+    );
+  }
+
+  if (parts.length === 1 && chunks.length === 1) {
+    const parsed = parts[0];
+    return {
+      fileName,
+      docType: (parsed.docType as string) ?? "other",
+      summary: (parsed.summary as string) ?? "",
+      people: (parsed.people as DocumentFacts["people"]) ?? [],
+      events: (parsed.events as DocumentFacts["events"]) ?? [],
+      evidence: (parsed.evidence as DocumentFacts["evidence"]) ?? [],
+      quotes: (parsed.quotes as DocumentFacts["quotes"]) ?? [],
+      verifiableFacts:
+        (parsed.verifiableFacts as DocumentFacts["verifiableFacts"]) ?? [],
+    };
+  }
+
+  console.log(
+    `[upload-docs] Merging ${parts.length}/${chunks.length} chunks for "${fileName}" (${totalPages} pages)`
+  );
+  return mergeExtractions(parts, fileName);
 }

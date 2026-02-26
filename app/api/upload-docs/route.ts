@@ -4,8 +4,8 @@ import { processDocument } from "@/lib/documents/process";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB per file
-const MAX_TOTAL_SIZE = 30 * 1024 * 1024; // 30MB total
+const MAX_FILE_SIZE = 30 * 1024 * 1024; // 30MB per file
+const MAX_TOTAL_SIZE = 100 * 1024 * 1024; // 100MB total
 
 function detectMimeType(buffer: Buffer): string | null {
   if (buffer.length < 4) return null;
