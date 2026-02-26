@@ -63,7 +63,7 @@ Focus on facts relevant to defamation and legal review:
 - Official statements from officers, witnesses
 - Case disposition or outcome
 
-Be thorough — extract EVERY verifiable fact. These will be cross-referenced against a documentary script to reduce false legal flags.`;
+Be thorough but CONCISE — extract every verifiable fact, but keep descriptions SHORT (1-2 sentences max per item). Do NOT include long narrative summaries of individual events. Focus on extractable facts: names, dates, charges, cause of death, evidence types, key quotes. These will be cross-referenced against a documentary script to reduce false legal flags.`;
 
 export async function processDocument(
   fileBuffer: Buffer,
@@ -111,16 +111,27 @@ export async function processDocument(
     text: `Extract all factual information from this document. File: ${fileName}`,
   });
 
-  const stream = getAnthropic().messages.stream({
-    model: "claude-sonnet-4-6",
-    max_tokens: 8000,
-    system: EXTRACTION_SYSTEM,
-    messages: [{ role: "user", content: contentBlocks }],
-    temperature: 0.1,
-  });
-  const response = await stream.finalMessage();
-  const result =
-    response.content[0].type === "text" ? response.content[0].text : "";
+  let result: string;
+  try {
+    const stream = getAnthropic().messages.stream({
+      model: "claude-sonnet-4-6",
+      max_tokens: 32000,
+      system: EXTRACTION_SYSTEM,
+      messages: [{ role: "user", content: contentBlocks }],
+      temperature: 0.1,
+    });
+    const response = await stream.finalMessage();
+    result =
+      response.content[0].type === "text" ? response.content[0].text : "";
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[upload-docs] Claude API error for "${fileName}":`, msg);
+    throw new Error(`Claude API error: ${msg}`);
+  }
+
+  if (!result) {
+    throw new Error(`Claude returned empty response for "${fileName}"`);
+  }
 
   // Parse JSON response
   let cleaned = result.trim();
@@ -137,8 +148,30 @@ export async function processDocument(
   try {
     parsed = JSON.parse(cleaned);
   } catch {
+    // Fix truncated JSON: find last complete entry, close brackets
     try {
-      let fixed = cleaned.replace(/,\s*$/, "");
+      let fixed = cleaned;
+      // Find the last successfully completed JSON value boundary
+      // Look for last complete array element or object property
+      const lastGoodPoints = [
+        fixed.lastIndexOf("},"),       // end of object in array
+        fixed.lastIndexOf("],"),       // end of array in object
+        fixed.lastIndexOf('"],'),      // end of string array
+        fixed.lastIndexOf("true,"),    // end of boolean
+        fixed.lastIndexOf("false,"),   // end of boolean
+      ].filter((i) => i > 0);
+
+      if (lastGoodPoints.length > 0) {
+        const cutAt = Math.max(...lastGoodPoints);
+        // Cut after the complete value (keep the } or ] but drop the comma)
+        fixed = fixed.slice(0, cutAt + 1);
+      } else {
+        // Fallback: close any open strings
+        const quoteCount = (fixed.match(/(?<!\\)"/g) || []).length;
+        if (quoteCount % 2 !== 0) fixed += '"';
+      }
+
+      fixed = fixed.replace(/,\s*$/, "");
       const braceOpens = (fixed.match(/\{/g) || []).length;
       const braceCloses = (fixed.match(/\}/g) || []).length;
       const bracketOpens = (fixed.match(/\[/g) || []).length;
@@ -146,7 +179,9 @@ export async function processDocument(
       for (let i = 0; i < braceOpens - braceCloses; i++) fixed += "}";
       for (let i = 0; i < bracketOpens - bracketCloses; i++) fixed += "]";
       parsed = JSON.parse(fixed);
+      console.log(`[upload-docs] Recovered truncated JSON for "${fileName}" (${Object.keys(parsed).length} top-level keys)`);
     } catch {
+      console.error(`[upload-docs] JSON parse failed for "${fileName}". Last 300 chars:`, cleaned.slice(-300));
       throw new Error(
         `Failed to parse document extraction result for "${fileName}"`
       );
