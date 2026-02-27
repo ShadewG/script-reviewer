@@ -2,10 +2,14 @@ import { NextRequest } from "next/server";
 import { processDocument } from "@/lib/documents/process";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+export const maxDuration = 900;
 
-const MAX_FILE_SIZE = 30 * 1024 * 1024; // 30MB per file
-const MAX_TOTAL_SIZE = 100 * 1024 * 1024; // 100MB total
+const MAX_FILE_SIZE = 75 * 1024 * 1024; // 75MB per file
+const MAX_TOTAL_SIZE = 150 * 1024 * 1024; // 150MB total
+
+function formatMiB(bytes: number): string {
+  return `${Math.floor(bytes / (1024 * 1024))}MB`;
+}
 
 function detectMimeType(buffer: Buffer): string | null {
   if (buffer.length < 4) return null;
@@ -55,7 +59,7 @@ export async function POST(req: NextRequest) {
   const totalSize = files.reduce((sum, f) => sum + f.size, 0);
   if (totalSize > MAX_TOTAL_SIZE) {
     return Response.json(
-      { error: "Total upload size exceeds 30MB" },
+      { error: `Total upload size exceeds ${formatMiB(MAX_TOTAL_SIZE)}` },
       { status: 400 }
     );
   }
@@ -66,7 +70,9 @@ export async function POST(req: NextRequest) {
   const validFiles: Array<{ buffer: Buffer; safeName: string; mime: string }> = [];
   for (const file of files) {
     if (file.size > MAX_FILE_SIZE) {
-      errors.push(`${file.name}: File too large (max 10MB)`);
+      errors.push(
+        `${file.name}: File too large (max ${formatMiB(MAX_FILE_SIZE)})`
+      );
       continue;
     }
 

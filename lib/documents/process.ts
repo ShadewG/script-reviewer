@@ -66,7 +66,27 @@ Focus on facts relevant to defamation and legal review:
 
 Be thorough but CONCISE — extract every verifiable fact, but keep descriptions SHORT (1-2 sentences max per item). Do NOT include long narrative summaries of individual events. Focus on extractable facts: names, dates, charges, cause of death, evidence types, key quotes. These will be cross-referenced against a documentary script to reduce false legal flags.`;
 
-const MAX_PDF_PAGES = 100; // Anthropic API limit per document block
+// Anthropic hard-limits PDFs to 100 pages. Keep headroom to avoid edge-case counting mismatches.
+const MAX_PDF_PAGES = 90;
+const EXTRACTION_RETRIES = 3;
+const RETRY_BASE_DELAY_MS = 1200;
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientAnthropicError(message: string): boolean {
+  const msg = message.toLowerCase();
+  return (
+    msg.includes("429") ||
+    msg.includes("rate limit") ||
+    msg.includes("overloaded") ||
+    msg.includes("timeout") ||
+    msg.includes("503") ||
+    msg.includes("529") ||
+    msg.includes("econnreset")
+  );
+}
 
 /** Split a PDF into chunks of ≤ MAX_PDF_PAGES, returning each as a Buffer */
 async function splitPdf(
@@ -104,21 +124,32 @@ async function extractFromContent(
   fileName: string
 ): Promise<Record<string, unknown>> {
   let result: string;
-  try {
-    const stream = getAnthropic().messages.stream({
-      model: "claude-sonnet-4-6",
-      max_tokens: 32000,
-      system: EXTRACTION_SYSTEM,
-      messages: [{ role: "user", content: contentBlocks }],
-      temperature: 0.1,
-    });
-    const response = await stream.finalMessage();
-    result =
-      response.content[0].type === "text" ? response.content[0].text : "";
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[upload-docs] Claude API error for "${fileName}":`, msg);
-    throw new Error(`Claude API error: ${msg}`);
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const stream = getAnthropic().messages.stream({
+        model: "claude-sonnet-4-6",
+        max_tokens: 32000,
+        system: EXTRACTION_SYSTEM,
+        messages: [{ role: "user", content: contentBlocks }],
+        temperature: 0.1,
+      });
+      const response = await stream.finalMessage();
+      result =
+        response.content[0].type === "text" ? response.content[0].text : "";
+      break;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const isTransient =
+        attempt < EXTRACTION_RETRIES && isTransientAnthropicError(msg);
+      console.error(
+        `[upload-docs] Claude API error for "${fileName}" (attempt ${attempt}/${EXTRACTION_RETRIES}):`,
+        msg
+      );
+      if (!isTransient) {
+        throw new Error(`Claude API error: ${msg}`);
+      }
+      await wait(RETRY_BASE_DELAY_MS * attempt);
+    }
   }
 
   if (!result) {
@@ -291,45 +322,38 @@ export async function processDocument(
     };
   }
 
-  // PDF: split if > 100 pages, then process chunks in parallel
+  // PDF: split if > 100 pages and process chunks sequentially to reduce rate-limit failures
   const { chunks, totalPages } = await splitPdf(fileBuffer);
-
-  const results = await Promise.allSettled(
-    chunks.map((chunk, idx) => {
-      const pageStart = idx * MAX_PDF_PAGES + 1;
-      const pageEnd = Math.min((idx + 1) * MAX_PDF_PAGES, totalPages);
-      const label =
-        chunks.length > 1
-          ? `${fileName} (pages ${pageStart}-${pageEnd})`
-          : fileName;
-
-      const contentBlocks: Anthropic.Messages.ContentBlockParam[] = [
-        {
-          type: "document",
-          source: {
-            type: "base64",
-            media_type: "application/pdf",
-            data: chunk.toString("base64"),
-          },
-        } as Anthropic.Messages.ContentBlockParam,
-        {
-          type: "text",
-          text: `Extract all factual information from this document. File: ${label}`,
-        },
-      ];
-      return extractFromContent(contentBlocks, label);
-    })
-  );
 
   const parts: Record<string, unknown>[] = [];
   const errors: string[] = [];
-  for (let i = 0; i < results.length; i++) {
-    const r = results[i];
-    if (r.status === "fulfilled") {
-      parts.push(r.value);
-    } else {
-      const msg =
-        r.reason instanceof Error ? r.reason.message : "Chunk processing failed";
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    const pageStart = i * MAX_PDF_PAGES + 1;
+    const pageEnd = Math.min((i + 1) * MAX_PDF_PAGES, totalPages);
+    const label =
+      chunks.length > 1 ? `${fileName} (pages ${pageStart}-${pageEnd})` : fileName;
+
+    const contentBlocks: Anthropic.Messages.ContentBlockParam[] = [
+      {
+        type: "document",
+        source: {
+          type: "base64",
+          media_type: "application/pdf",
+          data: chunk.toString("base64"),
+        },
+      } as Anthropic.Messages.ContentBlockParam,
+      {
+        type: "text",
+        text: `Extract all factual information from this document. File: ${label}`,
+      },
+    ];
+
+    try {
+      const parsed = await extractFromContent(contentBlocks, label);
+      parts.push(parsed);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Chunk processing failed";
       errors.push(msg);
       console.error(
         `[upload-docs] Chunk ${i + 1}/${chunks.length} failed for "${fileName}": ${msg}`
