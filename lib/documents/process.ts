@@ -274,6 +274,68 @@ function mergeExtractions(
   };
 }
 
+function trimToMax(value: unknown, max: number): string {
+  if (typeof value !== "string") return "";
+  return value.slice(0, max);
+}
+
+function toNullableNumber(value: unknown): number | null | undefined {
+  if (value === null || value === undefined) return value as null | undefined;
+  if (typeof value !== "number" || Number.isNaN(value)) return undefined;
+  return value;
+}
+
+function normalizeDocumentFacts(input: DocumentFacts): DocumentFacts {
+  const allowedConfidence = new Set(["confirmed", "likely", "uncertain"]);
+
+  return {
+    fileName: trimToMax(input.fileName, 255),
+    docType: trimToMax(input.docType, 50),
+    summary: trimToMax(input.summary, 5000),
+    people: (input.people ?? []).slice(0, 100).map((p) => ({
+      name: trimToMax(p.name, 200),
+      role: trimToMax(p.role, 100),
+      actions: (p.actions ?? []).slice(0, 50).map((a) => trimToMax(a, 500)),
+      pageRefs: (p.pageRefs ?? [])
+        .filter((n): n is number => typeof n === "number" && !Number.isNaN(n))
+        .slice(0, 100),
+    })),
+    events: (input.events ?? []).slice(0, 200).map((e) => ({
+      description: trimToMax(e.description, 1000),
+      date:
+        e.date === null || e.date === undefined
+          ? e.date
+          : trimToMax(e.date, 20),
+      time:
+        e.time === null || e.time === undefined
+          ? e.time
+          : trimToMax(e.time, 20),
+      page: toNullableNumber(e.page),
+    })),
+    evidence: (input.evidence ?? []).slice(0, 100).map((e) => ({
+      type: trimToMax(e.type, 100),
+      description: trimToMax(e.description, 1000),
+      page: toNullableNumber(e.page),
+    })),
+    quotes: (input.quotes ?? []).slice(0, 100).map((q) => ({
+      text: trimToMax(q.text, 2000),
+      speaker: trimToMax(q.speaker, 200),
+      page: toNullableNumber(q.page),
+    })),
+    verifiableFacts: (input.verifiableFacts ?? []).slice(0, 200).map((f) => ({
+      claim: trimToMax(f.claim, 2000),
+      source: trimToMax(f.source, 500),
+      confidence: allowedConfidence.has(f.confidence)
+        ? f.confidence
+        : "uncertain",
+    })),
+    rawTextPreview:
+      input.rawTextPreview === null || input.rawTextPreview === undefined
+        ? input.rawTextPreview
+        : trimToMax(input.rawTextPreview, 5000),
+  };
+}
+
 export async function processDocument(
   fileBuffer: Buffer,
   fileName: string,
@@ -309,7 +371,7 @@ export async function processDocument(
       },
     ];
     const parsed = await extractFromContent(contentBlocks, fileName);
-    return {
+    return normalizeDocumentFacts({
       fileName,
       docType: (parsed.docType as string) ?? "other",
       summary: (parsed.summary as string) ?? "",
@@ -319,7 +381,7 @@ export async function processDocument(
       quotes: (parsed.quotes as DocumentFacts["quotes"]) ?? [],
       verifiableFacts:
         (parsed.verifiableFacts as DocumentFacts["verifiableFacts"]) ?? [],
-    };
+    });
   }
 
   // PDF: split if > 100 pages and process chunks sequentially to reduce rate-limit failures
@@ -369,7 +431,7 @@ export async function processDocument(
 
   if (parts.length === 1 && chunks.length === 1) {
     const parsed = parts[0];
-    return {
+    return normalizeDocumentFacts({
       fileName,
       docType: (parsed.docType as string) ?? "other",
       summary: (parsed.summary as string) ?? "",
@@ -379,11 +441,11 @@ export async function processDocument(
       quotes: (parsed.quotes as DocumentFacts["quotes"]) ?? [],
       verifiableFacts:
         (parsed.verifiableFacts as DocumentFacts["verifiableFacts"]) ?? [],
-    };
+    });
   }
 
   console.log(
     `[upload-docs] Merging ${parts.length}/${chunks.length} chunks for "${fileName}" (${totalPages} pages)`
   );
-  return mergeExtractions(parts, fileName);
+  return normalizeDocumentFacts(mergeExtractions(parts, fileName));
 }

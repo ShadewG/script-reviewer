@@ -122,9 +122,15 @@ export async function POST(req: NextRequest) {
   if (Array.isArray(documentFacts) && documentFacts.length > 0) {
     try {
       validatedFacts = DocumentFactsSchema.parse(documentFacts);
-    } catch {
+    } catch (err) {
+      const detail =
+        err instanceof z.ZodError
+          ? err.issues[0]
+            ? `${err.issues[0].path.join(".")}: ${err.issues[0].message}`
+            : "Validation failed"
+          : "Validation failed";
       return Response.json(
-        { error: "Invalid documentFacts format" },
+        { error: "Invalid documentFacts format", detail },
         { status: 400 }
       );
     }
