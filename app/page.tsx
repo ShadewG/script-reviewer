@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import type { DocumentFacts } from "@/lib/documents/types";
+import type { VideoFrameFinding } from "@/lib/pipeline/types";
 
 const US_STATES = [
   "Alabama","Alaska","Arizona","Arkansas","California","Colorado","Connecticut",
@@ -58,6 +59,11 @@ export default function Home() {
   const [videoTitle, setVideoTitle] = useState("");
   const [thumbnailDesc, setThumbnailDesc] = useState("");
   const [documentFacts, setDocumentFacts] = useState<DocumentFacts[]>([]);
+  const [videoFindings, setVideoFindings] = useState<VideoFrameFinding[]>([]);
+  const [videoUploading, setVideoUploading] = useState(false);
+  const [videoError, setVideoError] = useState<string | null>(null);
+  const [videoMeta, setVideoMeta] = useState<{ sampledFrames: number; intervalSeconds: number } | null>(null);
+  const videoInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadErrors, setUploadErrors] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -131,6 +137,37 @@ export default function Home() {
     setDocumentFacts((prev) => prev.filter((_, i) => i !== index));
   };
 
+  const handleVideoUpload = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const file = files[0];
+    setVideoUploading(true);
+    setVideoError(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/upload-video", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Video upload failed");
+      }
+      setVideoFindings(data.findings ?? []);
+      setVideoMeta({
+        sampledFrames: data.sampledFrames ?? 0,
+        intervalSeconds: data.intervalSeconds ?? 10,
+      });
+    } catch (err) {
+      setVideoFindings([]);
+      setVideoMeta(null);
+      setVideoError(err instanceof Error ? err.message : "Video upload failed");
+    } finally {
+      setVideoUploading(false);
+      if (videoInputRef.current) videoInputRef.current.value = "";
+    }
+  }, []);
+
   const handleSubmit = async () => {
     const scriptText = inputMode === "gdoc" ? gdocPreview?.text || script : script;
     if (!scriptText.trim()) return;
@@ -177,6 +214,7 @@ export default function Home() {
         thumbnailDesc: thumbnailDesc || undefined,
         analysisMode,
         documentFacts: documentFacts.length > 0 ? documentFacts : undefined,
+        videoFindings: videoFindings.length > 0 ? videoFindings : undefined,
       };
 
       if (inputMode === "gdoc" && gdocUrl && !gdocPreview) {
@@ -514,9 +552,55 @@ export default function Home() {
             )}
           </div>
 
+          <div>
+            <label className="text-xs text-[var(--text-dim)] uppercase tracking-wider mb-2 block">
+              Video Scan (MVP)
+            </label>
+            <p className="text-[10px] text-[var(--text-dim)] mb-2">
+              Upload one video. Frames are sampled ~every 10s and scanned for privacy/graphic/profanity risks.
+            </p>
+            <input
+              ref={videoInputRef}
+              type="file"
+              accept=".mp4,.mov,.webm,.mkv,video/mp4,video/quicktime,video/webm,video/x-matroska"
+              onChange={(e) => handleVideoUpload(e.target.files)}
+              disabled={running || videoUploading}
+              className="hidden"
+            />
+            <button
+              onClick={() => videoInputRef.current?.click()}
+              disabled={running || videoUploading}
+              className="w-full py-2 text-xs uppercase tracking-wider border border-dashed border-[var(--border)] text-[var(--text-dim)] hover:text-[var(--text)] hover:border-[var(--text-dim)] disabled:opacity-30 transition-colors"
+            >
+              {videoUploading ? "SCANNING VIDEO..." : "UPLOAD VIDEO"}
+            </button>
+            {videoError && (
+              <div className="mt-2 text-[10px] text-[var(--red)]">{videoError}</div>
+            )}
+            {videoMeta && (
+              <div className="mt-2 text-[10px] text-[var(--text-dim)]">
+                Sampled {videoMeta.sampledFrames} frames (about every {videoMeta.intervalSeconds}s)
+              </div>
+            )}
+            {videoFindings.length > 0 && (
+              <div className="mt-2 border border-[var(--border)] bg-[var(--bg-surface)] p-2 text-[10px]">
+                <div className="text-[var(--text-bright)] mb-1">
+                  {videoFindings.length} risky timecodes detected
+                </div>
+                <div className="space-y-1 max-h-24 overflow-auto">
+                  {videoFindings.slice(0, 20).map((f, i) => (
+                    <div key={`${f.timecode}-${i}`} className="text-[var(--text-dim)]">
+                      {f.timecode} — {f.risks[0]?.policyName ?? "Risk"}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
           <button
             onClick={handleSubmit}
-            disabled={running || uploading || !currentScript.trim()}
+            disabled={running || uploading || videoUploading || !currentScript.trim()}
             className="w-full py-3 text-sm uppercase tracking-widest border border-[var(--border)] text-[var(--text-bright)] bg-[var(--bg-surface)] hover:bg-[var(--bg-elevated)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             {running ? "ANALYZING..." : "ANALYZE SCRIPT"}

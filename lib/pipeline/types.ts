@@ -1,5 +1,20 @@
 export type AnalysisMode = "full" | "legal_only" | "monetization_only";
 
+export interface VideoFrameRisk {
+  category: "community_guidelines" | "age_restriction" | "monetization" | "privacy";
+  severity: "low" | "medium" | "high" | "severe";
+  impact: "full_ads" | "limited_ads" | "no_ads" | "age_restricted" | "removal_risk";
+  policyName: string;
+  reasoning: string;
+  detectedText?: string;
+}
+
+export interface VideoFrameFinding {
+  second: number;
+  timecode: string;
+  risks: VideoFrameRisk[];
+}
+
 export interface CaseMetadata {
   state: string;
   caseStatus: "convicted" | "charged" | "suspect" | "acquitted" | "unsolved";
@@ -9,6 +24,7 @@ export interface CaseMetadata {
   thumbnailDesc?: string;
   analysisMode?: AnalysisMode;
   documentFacts?: import("../documents/types").DocumentFacts[];
+  videoFindings?: VideoFrameFinding[];
 }
 
 export interface ParsedEntity {

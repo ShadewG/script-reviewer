@@ -6,6 +6,7 @@ import { parseGoogleDocsUrl, fetchGoogleDocText } from "@/lib/google-docs/fetch"
 import { extractLatestVersion } from "@/lib/utils/extract-latest-version";
 import type { CaseMetadata, StageUpdate } from "@/lib/pipeline/types";
 import type { DocumentFacts } from "@/lib/documents/types";
+import type { VideoFrameFinding } from "@/lib/pipeline/types";
 
 // nullable() handles Claude returning null for optional fields
 const optStr = (max: number) => z.string().max(max).nullable().optional();
@@ -71,6 +72,23 @@ const AnalysisModeSchema = z
   .enum(["full", "legal_only", "monetization_only"])
   .optional();
 
+const VideoFindingsSchema = z.array(
+  z.object({
+    second: z.number().int().min(0),
+    timecode: z.string().max(20),
+    risks: z.array(
+      z.object({
+        category: z.enum(["community_guidelines", "age_restriction", "monetization", "privacy"]),
+        severity: z.enum(["low", "medium", "high", "severe"]),
+        impact: z.enum(["full_ads", "limited_ads", "no_ads", "age_restricted", "removal_risk"]),
+        policyName: z.string().max(200),
+        reasoning: z.string().max(1000),
+        detectedText: z.string().max(500).optional(),
+      })
+    ).max(20),
+  })
+).max(200);
+
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
@@ -86,6 +104,7 @@ export async function POST(req: NextRequest) {
     videoTitle,
     thumbnailDesc,
     documentFacts,
+    videoFindings,
     analysisMode,
   } = body;
 
@@ -149,6 +168,18 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  let validatedVideoFindings: VideoFrameFinding[] | undefined;
+  if (Array.isArray(videoFindings) && videoFindings.length > 0) {
+    try {
+      validatedVideoFindings = VideoFindingsSchema.parse(videoFindings);
+    } catch {
+      return Response.json(
+        { error: "Invalid videoFindings format" },
+        { status: 400 }
+      );
+    }
+  }
+
   const metadata: CaseMetadata = {
     state,
     caseStatus,
@@ -158,6 +189,7 @@ export async function POST(req: NextRequest) {
     thumbnailDesc,
     analysisMode: parsedAnalysisMode.data ?? "full",
     documentFacts: validatedFacts,
+    videoFindings: validatedVideoFindings,
   };
 
   const review = await prisma.review.create({

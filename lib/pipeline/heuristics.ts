@@ -1,4 +1,4 @@
-import type { LegalFlag, PolicyFlag } from "./types";
+import type { LegalFlag, PolicyFlag, VideoFrameFinding } from "./types";
 
 const ADDRESS_SUFFIX =
   "(street|st|avenue|ave|road|rd|lane|ln|drive|dr|boulevard|blvd|court|ct|way|place|pl|terrace|ter|parkway|pkwy)";
@@ -181,5 +181,71 @@ export function heuristicLegalFlags(script: string): LegalFlag[] {
       confidence: 0.85,
     });
   }
+  return flags;
+}
+
+export function videoFindingsToPolicyFlags(
+  findings: VideoFrameFinding[]
+): PolicyFlag[] {
+  const flags: PolicyFlag[] = [];
+  const seen = new Set<string>();
+
+  for (const finding of findings) {
+    for (const risk of finding.risks ?? []) {
+      const text = `[Video ${finding.timecode}] ${risk.detectedText ?? risk.policyName}`;
+      const key = `${finding.second}|${risk.policyName}|${risk.category}|${risk.reasoning}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      flags.push({
+        text,
+        category:
+          risk.category === "privacy" ? "community_guidelines" : risk.category,
+        severity: risk.severity,
+        policyName: `${risk.policyName} (Video Frame)`,
+        policyQuote:
+          "Flag derived from frame-level visual analysis of uploaded video.",
+        impact: risk.impact,
+        saferRewrite:
+          "Blur/crop sensitive visuals or replace with non-graphic and non-identifying alternatives.",
+        reasoning: `${risk.reasoning} Timecode: ${finding.timecode}.`,
+      });
+    }
+  }
+
+  return flags;
+}
+
+export function videoFindingsToLegalFlags(
+  findings: VideoFrameFinding[]
+): LegalFlag[] {
+  const flags: LegalFlag[] = [];
+  const seen = new Set<string>();
+
+  for (const finding of findings) {
+    for (const risk of finding.risks ?? []) {
+      if (risk.category !== "privacy") continue;
+      const text = `[Video ${finding.timecode}] ${risk.detectedText ?? "Sensitive visual detail"}`;
+      const key = `${finding.second}|${risk.policyName}|${risk.reasoning}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      flags.push({
+        text,
+        person: "Identifiable individual",
+        riskType: "privacy",
+        severity:
+          risk.severity === "severe"
+            ? "severe"
+            : risk.severity === "high"
+            ? "high"
+            : "medium",
+        reasoning: `${risk.reasoning} Timecode: ${finding.timecode}.`,
+        saferRewrite:
+          "Blur or remove identifying visual information before publication.",
+        counselReview: risk.severity === "severe",
+        confidence: 0.75,
+      });
+    }
+  }
+
   return flags;
 }

@@ -11,7 +11,12 @@ import {
 } from "../prompts/case-research";
 import { SYNTHESIS_SYSTEM, buildSynthesisPrompt } from "../prompts/synthesis";
 import { runMultiModelLegalReview } from "./cross-validate";
-import { heuristicLegalFlags, heuristicPolicyFlags } from "./heuristics";
+import {
+  heuristicLegalFlags,
+  heuristicPolicyFlags,
+  videoFindingsToLegalFlags,
+  videoFindingsToPolicyFlags,
+} from "./heuristics";
 import { prisma } from "../db";
 import type {
   CaseMetadata,
@@ -239,6 +244,10 @@ export async function runPipeline(
     youtubeResult.status === "fulfilled" ? youtubeResult.value : [];
   if (runYouTube) {
     policyFlags = mergePolicyFlags(policyFlags, heuristicPolicyFlags(script));
+    policyFlags = mergePolicyFlags(
+      policyFlags,
+      videoFindingsToPolicyFlags(metadata.videoFindings ?? [])
+    );
     await prisma.review.update({
       where: { id: reviewId },
       data: { youtubeFlags: policyFlags as never[] },
@@ -312,6 +321,10 @@ export async function runPipeline(
       }];
     }
     legalFlags = mergeLegalFlags(legalFlags, heuristicLegalFlags(script));
+    legalFlags = mergeLegalFlags(
+      legalFlags,
+      videoFindingsToLegalFlags(metadata.videoFindings ?? [])
+    );
     await prisma.review.update({
       where: { id: reviewId },
       data: {
