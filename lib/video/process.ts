@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -63,7 +64,8 @@ function toTimecode(second: number): string {
 }
 
 async function extractFrames(videoPath: string, outputDir: string): Promise<void> {
-  const ffmpegPath = ffmpegStatic || "ffmpeg";
+  const ffmpegPath =
+    ffmpegStatic && existsSync(ffmpegStatic) ? ffmpegStatic : "ffmpeg";
   const pattern = join(outputDir, "frame-%05d.jpg");
   await execFileAsync(ffmpegPath, [
     "-hide_banner",

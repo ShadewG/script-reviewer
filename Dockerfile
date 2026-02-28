@@ -23,6 +23,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
+RUN apk add --no-cache ffmpeg
 
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
