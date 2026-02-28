@@ -129,6 +129,36 @@ function formatReportText(data: ReviewData): string {
   return lines.join("\n");
 }
 
+function getRiskyLines(
+  scriptText: string,
+  legalFlags: LegalFlag[],
+  policyFlags: PolicyFlag[]
+): Array<{ line: number; text: string; tags: string[] }> {
+  const lines = scriptText.split("\n");
+  const map = new Map<number, Set<string>>();
+
+  for (const flag of legalFlags) {
+    if (!flag.line) continue;
+    const set = map.get(flag.line) ?? new Set<string>();
+    set.add(`legal:${flag.riskType}`);
+    map.set(flag.line, set);
+  }
+  for (const flag of policyFlags) {
+    if (!flag.line) continue;
+    const set = map.get(flag.line) ?? new Set<string>();
+    set.add(`policy:${flag.category}`);
+    map.set(flag.line, set);
+  }
+
+  return [...map.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([line, tags]) => ({
+      line,
+      text: lines[line - 1] ?? "",
+      tags: [...tags],
+    }));
+}
+
 type TabKey = "overview" | "script" | "legal" | "youtube" | "research" | "raw";
 
 function ResultsContent() {
@@ -159,6 +189,7 @@ function ResultsContent() {
   const report = data.synthesis;
   const allLegalFlags = report?.legalFlags ?? data.legalFlags ?? [];
   const allPolicyFlags = report?.policyFlags ?? data.youtubeFlags ?? [];
+  const riskyLines = getRiskyLines(data.scriptText, allLegalFlags, allPolicyFlags);
 
   return (
     <div className="min-h-screen p-4 max-w-6xl mx-auto">
@@ -312,6 +343,31 @@ function ResultsContent() {
                       </div>
                       <div className="text-xs text-[var(--text-dim)] line-through mb-1">{edit.original}</div>
                       <div className="text-xs text-[var(--green)]">{edit.suggested}</div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {riskyLines.length > 0 && (
+              <section>
+                <h3 className="text-xs uppercase tracking-wider text-[var(--amber)] mb-3 flex items-center gap-2">
+                  <span className="w-2 h-2 bg-[var(--amber)]" /> Risky Lines
+                </h3>
+                <div className="space-y-2">
+                  {riskyLines.slice(0, 30).map((item) => (
+                    <div key={item.line} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-[10px] text-[var(--text-dim)] border border-[var(--border)] px-1">
+                          L{item.line}
+                        </span>
+                        {item.tags.map((tag) => (
+                          <span key={tag} className="text-[10px] text-[var(--text-dim)] uppercase border border-[var(--border)] px-1">
+                            {tag.replace(":", " ")}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="text-xs text-[var(--text)]">{item.text || "(blank line)"}</div>
                     </div>
                   ))}
                 </div>

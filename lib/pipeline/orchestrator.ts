@@ -11,6 +11,7 @@ import {
 } from "../prompts/case-research";
 import { SYNTHESIS_SYSTEM, buildSynthesisPrompt } from "../prompts/synthesis";
 import { runMultiModelLegalReview } from "./cross-validate";
+import { heuristicLegalFlags, heuristicPolicyFlags } from "./heuristics";
 import { prisma } from "../db";
 import type {
   CaseMetadata,
@@ -42,6 +43,46 @@ function deriveMonetizationFromPolicyFlags(
     return "limited_ads";
   }
   return "full_ads";
+}
+
+function mergePolicyFlags(
+  base: PolicyFlag[],
+  heuristics: PolicyFlag[]
+): PolicyFlag[] {
+  const seen = new Set(
+    base.map(
+      (f) =>
+        `${f.line ?? "na"}|${f.category}|${f.policyName.toLowerCase()}|${f.text.toLowerCase()}`
+    )
+  );
+  const merged = [...base];
+  for (const h of heuristics) {
+    const key = `${h.line ?? "na"}|${h.category}|${h.policyName.toLowerCase()}|${h.text.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(h);
+  }
+  return merged;
+}
+
+function mergeLegalFlags(
+  base: LegalFlag[],
+  heuristics: LegalFlag[]
+): LegalFlag[] {
+  const seen = new Set(
+    base.map(
+      (f) =>
+        `${f.line ?? "na"}|${f.riskType}|${f.text.toLowerCase()}|${f.person.toLowerCase()}`
+    )
+  );
+  const merged = [...base];
+  for (const h of heuristics) {
+    const key = `${h.line ?? "na"}|${h.riskType}|${h.text.toLowerCase()}|${h.person.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(h);
+  }
+  return merged;
 }
 
 function safeJsonParse<T>(text: string): T {
@@ -194,8 +235,15 @@ export async function runPipeline(
     researchPromise,
   ]);
 
-  const policyFlags: PolicyFlag[] =
+  let policyFlags: PolicyFlag[] =
     youtubeResult.status === "fulfilled" ? youtubeResult.value : [];
+  if (runYouTube) {
+    policyFlags = mergePolicyFlags(policyFlags, heuristicPolicyFlags(script));
+    await prisma.review.update({
+      where: { id: reviewId },
+      data: { youtubeFlags: policyFlags as never[] },
+    });
+  }
   if (youtubeResult.status === "rejected") {
     emit({
       stage: 2,
@@ -263,6 +311,13 @@ export async function runPipeline(
         confidence: 0,
       }];
     }
+    legalFlags = mergeLegalFlags(legalFlags, heuristicLegalFlags(script));
+    await prisma.review.update({
+      where: { id: reviewId },
+      data: {
+        legalFlags: legalFlags as never[],
+      },
+    });
   } else {
     emit({
       stage: 1,
