@@ -23,6 +23,27 @@ import type {
 } from "./types";
 import type { DocumentFacts } from "../documents/types";
 
+function deriveMonetizationFromPolicyFlags(
+  policyFlags: PolicyFlag[]
+): "full_ads" | "limited_ads" | "no_ads" {
+  if (policyFlags.length === 0) return "full_ads";
+  if (
+    policyFlags.some(
+      (f) => f.impact === "no_ads" || f.impact === "removal_risk"
+    )
+  ) {
+    return "no_ads";
+  }
+  if (
+    policyFlags.some(
+      (f) => f.impact === "limited_ads" || f.impact === "age_restricted"
+    )
+  ) {
+    return "limited_ads";
+  }
+  return "full_ads";
+}
+
 function safeJsonParse<T>(text: string): T {
   let cleaned = text.trim();
   // Strip markdown code fences
@@ -230,6 +251,9 @@ export async function runPipeline(
     // Inject the actual flags (prompt told Claude to return empty arrays to save tokens)
     report.legalFlags = legalFlags;
     report.policyFlags = policyFlags;
+    // Keep monetization dashboard consistent with actual policy flags shown in UI.
+    report.riskDashboard.monetization =
+      deriveMonetizationFromPolicyFlags(policyFlags);
     await prisma.review.update({
       where: { id: reviewId },
       data: {

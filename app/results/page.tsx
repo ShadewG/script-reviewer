@@ -511,7 +511,15 @@ function ResultsContent() {
         {activeTab === "youtube" && (
           <div className="space-y-2">
             {allPolicyFlags.length === 0 ? (
-              <p className="text-xs text-[var(--text-dim)]">No YouTube policy flags identified.</p>
+              <div className="space-y-2">
+                <p className="text-xs text-[var(--text-dim)]">No YouTube policy flags identified.</p>
+                {report?.riskDashboard?.monetization !== "full_ads" && (
+                  <p className="text-xs text-[var(--yellow)]">
+                    Monetization was marked {report?.riskDashboard?.monetization.replaceAll("_", " ")} in synthesis,
+                    but no specific policy flags were returned for this review.
+                  </p>
+                )}
+              </div>
             ) : (
               allPolicyFlags.map((flag: PolicyFlag, i: number) => (
                 <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
