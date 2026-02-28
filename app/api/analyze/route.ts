@@ -67,6 +67,10 @@ const DocumentFactsSchema = z.array(
   })
 ).max(10);
 
+const AnalysisModeSchema = z
+  .enum(["full", "legal_only", "monetization_only"])
+  .optional();
+
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
@@ -82,6 +86,7 @@ export async function POST(req: NextRequest) {
     videoTitle,
     thumbnailDesc,
     documentFacts,
+    analysisMode,
   } = body;
 
   // Resolve script text from either direct paste or Google Doc URL
@@ -117,6 +122,14 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const parsedAnalysisMode = AnalysisModeSchema.safeParse(analysisMode);
+  if (!parsedAnalysisMode.success) {
+    return Response.json(
+      { error: "Invalid analysisMode" },
+      { status: 400 }
+    );
+  }
+
   // Validate documentFacts if provided
   let validatedFacts: DocumentFacts[] | undefined;
   if (Array.isArray(documentFacts) && documentFacts.length > 0) {
@@ -143,6 +156,7 @@ export async function POST(req: NextRequest) {
     footageTypes: footageTypes ?? [],
     videoTitle,
     thumbnailDesc,
+    analysisMode: parsedAnalysisMode.data ?? "full",
     documentFacts: validatedFacts,
   };
 

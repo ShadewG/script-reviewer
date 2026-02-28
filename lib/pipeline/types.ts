@@ -1,3 +1,5 @@
+export type AnalysisMode = "full" | "legal_only" | "monetization_only";
+
 export interface CaseMetadata {
   state: string;
   caseStatus: "convicted" | "charged" | "suspect" | "acquitted" | "unsolved";
@@ -5,6 +7,7 @@ export interface CaseMetadata {
   footageTypes: string[];
   videoTitle?: string;
   thumbnailDesc?: string;
+  analysisMode?: AnalysisMode;
   documentFacts?: import("../documents/types").DocumentFacts[];
 }
 

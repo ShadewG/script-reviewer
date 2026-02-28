@@ -27,6 +27,7 @@ export function buildSynthesisPrompt(
 CASE: ${metadata.state} | Status: ${metadata.caseStatus} | Minors: ${metadata.hasMinors}
 VIDEO TITLE: ${metadata.videoTitle || "N/A"}
 SCRIPT LENGTH: ${scriptLines.length} lines
+ANALYSIS MODE: ${metadata.analysisMode ?? "full"}
 
 LEGAL FLAGS (${legalFlags.length}):
 ${JSON.stringify(legalFlags, null, 2)}
@@ -41,6 +42,10 @@ PARSED ENTITIES:
 ${JSON.stringify(parsed.entities, null, 2)}
 
 INSTRUCTIONS:
+0. Respect ANALYSIS MODE:
+   - full: include both legal and monetization conclusions
+   - legal_only: focus legal risk; keep monetization conservative based only on provided policy flags
+   - monetization_only: focus YouTube/monetization; keep legal conservative based only on provided legal flags
 1. Cross-reference research with legal flags:
    - If research confirms conviction → downgrade defamation risk for definitive labels
    - If only charges → upgrade risk for definitive language

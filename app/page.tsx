@@ -28,6 +28,14 @@ const FOOTAGE_TYPES = [
   "Surveillance", "News Clips", "Photos", "Reenactment",
 ];
 
+type AnalysisMode = "full" | "legal_only" | "monetization_only";
+
+const ANALYSIS_MODES: Array<{ value: AnalysisMode; label: string }> = [
+  { value: "full", label: "FULL (LEGAL + MONETIZATION)" },
+  { value: "legal_only", label: "LEGAL ONLY" },
+  { value: "monetization_only", label: "MONETIZATION ONLY" },
+];
+
 interface StageStatus {
   stage: number;
   name: string;
@@ -44,6 +52,7 @@ export default function Home() {
   const [gdocPreview, setGdocPreview] = useState<{ text: string; lineCount: number; charCount: number } | null>(null);
   const [state, setState] = useState("California");
   const [caseStatus, setCaseStatus] = useState("convicted");
+  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("full");
   const [hasMinors, setHasMinors] = useState(false);
   const [footageTypes, setFootageTypes] = useState<string[]>([]);
   const [videoTitle, setVideoTitle] = useState("");
@@ -129,9 +138,30 @@ export default function Home() {
     setError(null);
     setStages([
       { stage: 0, name: "SCRIPT PARSER", status: "pending" },
-      { stage: 1, name: "LEGAL REVIEW (CROSS-CHECK)", status: "pending" },
-      { stage: 2, name: "YOUTUBE POLICY", status: "pending" },
-      { stage: 3, name: "CASE RESEARCH", status: "pending" },
+      {
+        stage: 1,
+        name:
+          analysisMode === "monetization_only"
+            ? "LEGAL REVIEW (SKIPPED)"
+            : "LEGAL REVIEW (CROSS-CHECK)",
+        status: analysisMode === "monetization_only" ? "complete" : "pending",
+      },
+      {
+        stage: 2,
+        name:
+          analysisMode === "legal_only"
+            ? "YOUTUBE POLICY (SKIPPED)"
+            : "YOUTUBE POLICY",
+        status: analysisMode === "legal_only" ? "complete" : "pending",
+      },
+      {
+        stage: 3,
+        name:
+          analysisMode === "monetization_only"
+            ? "CASE RESEARCH (SKIPPED)"
+            : "CASE RESEARCH",
+        status: analysisMode === "monetization_only" ? "complete" : "pending",
+      },
       { stage: 4, name: "SYNTHESIS", status: "pending" },
     ]);
 
@@ -145,6 +175,7 @@ export default function Home() {
         footageTypes,
         videoTitle: videoTitle || undefined,
         thumbnailDesc: thumbnailDesc || undefined,
+        analysisMode,
         documentFacts: documentFacts.length > 0 ? documentFacts : undefined,
       };
 
@@ -340,6 +371,22 @@ export default function Home() {
             >
               {CASE_STATUSES.map((s) => (
                 <option key={s.value} value={s.value}>{s.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-xs text-[var(--text-dim)] uppercase tracking-wider mb-2 block">
+              Analysis Scope
+            </label>
+            <select
+              value={analysisMode}
+              onChange={(e) => setAnalysisMode(e.target.value as AnalysisMode)}
+              className="w-full"
+              disabled={running}
+            >
+              {ANALYSIS_MODES.map((m) => (
+                <option key={m.value} value={m.value}>{m.label}</option>
               ))}
             </select>
           </div>
