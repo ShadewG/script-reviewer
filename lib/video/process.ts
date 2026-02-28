@@ -9,7 +9,7 @@ import type { VideoFrameFinding, VideoFrameRisk } from "../pipeline/types";
 
 const execFileAsync = promisify(execFile);
 const FRAME_INTERVAL_SECONDS = 10;
-const MAX_ANALYZED_FRAMES = 20;
+const MAX_ANALYZED_FRAMES = 8;
 const ANALYSIS_RETRIES = 2;
 
 const FRAME_SYSTEM = `You are a strict YouTube risk reviewer for true-crime content.
