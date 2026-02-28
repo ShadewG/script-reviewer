@@ -11,7 +11,9 @@ const ALLOWED_MIME = new Set([
   "video/quicktime",
   "video/webm",
   "video/x-matroska",
+  "application/octet-stream",
 ]);
+const ALLOWED_EXT = [".mp4", ".mov", ".webm", ".mkv"];
 
 export async function POST(req: NextRequest) {
   let formData: FormData;
@@ -30,7 +32,9 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: "Video too large (max 500MB)" }, { status: 400 });
   }
 
-  if (file.type && !ALLOWED_MIME.has(file.type)) {
+  const lowerName = file.name.toLowerCase();
+  const hasAllowedExt = ALLOWED_EXT.some((ext) => lowerName.endsWith(ext));
+  if (file.type && !ALLOWED_MIME.has(file.type) && !hasAllowedExt) {
     return Response.json(
       { error: "Unsupported video type. Use MP4, MOV, WEBM, or MKV." },
       { status: 400 }
