@@ -39,6 +39,42 @@ const PROFANITY_REGEXES = PROFANITY_WORDS.map((word) => ({
   regex: buildObfuscatedProfanityRegex(word),
 }));
 
+const TRAUMA_PATTERNS: Array<{
+  regex: RegExp;
+  severity: "medium" | "high" | "severe";
+  impact: "limited_ads" | "no_ads";
+  policyName: string;
+  reason: string;
+}> = [
+  {
+    regex:
+      /\b(decompos(?:e|ed|ing|ition)|rott(?:ing|en)|charred remains|dismember(?:ed|ment)?|behead(?:ed|ing)?|decapitat(?:ed|ion))\b/i,
+    severity: "severe",
+    impact: "no_ads",
+    policyName: "Graphic Violence and Gore",
+    reason:
+      "Detected extreme trauma or post-mortem detail (decomposition/dismemberment/beheading class language).",
+  },
+  {
+    regex:
+      /\b(brain matter|guts|entrails|intestines|blood[- ]soaked|pool of blood|severed (head|limb|arm|leg)|open wound|exposed bone)\b/i,
+    severity: "high",
+    impact: "limited_ads",
+    policyName: "Graphic Injury Detail",
+    reason:
+      "Detected highly graphic bodily injury detail likely to trigger reduced ad suitability.",
+  },
+  {
+    regex:
+      /\b(torture(?:d)?|agon(?:y|izing)|screamed in pain|multiple stab wounds|stabbed (him|her|them) (again|repeatedly)|bludgeoned|strangled to death)\b/i,
+    severity: "medium",
+    impact: "limited_ads",
+    policyName: "Trauma/Violence Intensity",
+    reason:
+      "Detected vivid trauma/violence phrasing that can increase age-restriction and monetization risk.",
+  },
+];
+
 function severityForProfanity(word: string): "low" | "medium" | "high" {
   if (word === "damn") return "low";
   if (word === "shit" || word === "bitch" || word === "bastard") return "medium";
@@ -95,6 +131,26 @@ export function heuristicPolicyFlags(script: string): PolicyFlag[] {
           "Use toned-down language or bleep/remove the strongest profanity in narration.",
         reasoning:
           `Detected explicit or censored profanity pattern ("${word}") in transcript text.`,
+      });
+    }
+
+    for (const pattern of TRAUMA_PATTERNS) {
+      if (!pattern.regex.test(text)) continue;
+      const key = `trauma:${lineNumber}:${pattern.policyName}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      flags.push({
+        line: lineNumber,
+        text,
+        category: "age_restriction",
+        severity: pattern.severity,
+        policyName: pattern.policyName,
+        policyQuote:
+          "Graphic or gory violence detail may be age-restricted or receive limited/no ads depending on intensity.",
+        impact: pattern.impact,
+        saferRewrite:
+          "Use less graphic phrasing and focus on verified facts without vivid bodily detail.",
+        reasoning: pattern.reason,
       });
     }
   }
