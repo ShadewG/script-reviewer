@@ -32,12 +32,12 @@ type VideoScanMode = "quick" | "balanced" | "deep";
 const VIDEO_SCAN_MODES: Array<{
   value: VideoScanMode;
   label: string;
-  intervalSeconds: number;
+  baseIntervalSeconds: number;
   maxFrames: number;
 }> = [
-  { value: "quick", label: "QUICK (~60 frames max)", intervalSeconds: 20, maxFrames: 60 },
-  { value: "balanced", label: "BALANCED (~120 frames max)", intervalSeconds: 10, maxFrames: 120 },
-  { value: "deep", label: "DEEP (~360 frames max)", intervalSeconds: 10, maxFrames: 360 },
+  { value: "quick", label: "QUICK (~60 frames max)", baseIntervalSeconds: 12, maxFrames: 60 },
+  { value: "balanced", label: "BALANCED (~120 frames max)", baseIntervalSeconds: 8, maxFrames: 120 },
+  { value: "deep", label: "DEEP (~360 frames max)", baseIntervalSeconds: 6, maxFrames: 360 },
 ];
 
 type AnalysisMode = "full" | "legal_only" | "monetization_only";
@@ -53,6 +53,20 @@ interface StageStatus {
   name: string;
   status: "pending" | "running" | "complete" | "error";
   error?: string;
+}
+
+type FrameSignature = {
+  values: Uint8ClampedArray;
+  hash: string;
+};
+
+function frameDistance(a: FrameSignature | null, b: FrameSignature | null): number {
+  if (!a || !b || a.values.length !== b.values.length) return 1;
+  let sum = 0;
+  for (let i = 0; i < a.values.length; i++) {
+    sum += Math.abs(a.values[i] - b.values[i]);
+  }
+  return sum / (a.values.length * 255);
 }
 
 export default function Home() {
@@ -76,6 +90,9 @@ export default function Home() {
   const [videoProgress, setVideoProgress] = useState<string>("");
   const [videoScanMode, setVideoScanMode] = useState<VideoScanMode>("balanced");
   const [videoMeta, setVideoMeta] = useState<{ sampledFrames: number; intervalSeconds: number } | null>(null);
+  const [videoTranscript, setVideoTranscript] = useState<string>("");
+  const [videoTranscribing, setVideoTranscribing] = useState(false);
+  const [videoTranscriptError, setVideoTranscriptError] = useState<string | null>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadErrors, setUploadErrors] = useState<string[]>([]);
@@ -150,6 +167,29 @@ export default function Home() {
     setDocumentFacts((prev) => prev.filter((_, i) => i !== index));
   };
 
+  const transcribeVideo = useCallback(async (file: File) => {
+    setVideoTranscribing(true);
+    setVideoTranscriptError(null);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch("/api/transcribe-video", {
+        method: "POST",
+        body: form,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Transcription failed");
+      setVideoTranscript(data.text || "");
+    } catch (err) {
+      setVideoTranscript("");
+      setVideoTranscriptError(
+        err instanceof Error ? err.message : "Video transcription failed"
+      );
+    } finally {
+      setVideoTranscribing(false);
+    }
+  }, []);
+
   const handleVideoUpload = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     const file = files[0];
@@ -157,6 +197,11 @@ export default function Home() {
     setVideoUploading(true);
     setVideoError(null);
     setVideoProgress("Loading video metadata...");
+    setVideoTranscript("");
+    setVideoTranscriptError(null);
+
+    const transcriptionPromise = transcribeVideo(file);
+
     try {
       objectUrl = URL.createObjectURL(file);
       const video = document.createElement("video");
@@ -172,15 +217,15 @@ export default function Home() {
       if (duration <= 0) throw new Error("Invalid video duration");
 
       const mode = VIDEO_SCAN_MODES.find((m) => m.value === videoScanMode) ?? VIDEO_SCAN_MODES[1];
-      const initialTimes: number[] = [];
-      for (let t = 0; t < duration; t += mode.intervalSeconds) initialTimes.push(t);
-      if (initialTimes.length === 0) initialTimes.push(0);
-      const stride = Math.max(1, Math.ceil(initialTimes.length / mode.maxFrames));
-      const times = initialTimes.filter((_, idx) => idx % stride === 0).slice(0, mode.maxFrames);
 
       const canvas = document.createElement("canvas");
       const thumbCanvas = document.createElement("canvas");
+      const sigCanvas = document.createElement("canvas");
+      sigCanvas.width = 48;
+      sigCanvas.height = 27;
       const findings: VideoFrameFinding[] = [];
+      const visitedHashes = new Set<string>();
+      const sampledSeconds: number[] = [];
 
       const seekTo = (sec: number) =>
         new Promise<void>((resolve, reject) => {
@@ -197,10 +242,33 @@ export default function Home() {
           video.currentTime = Math.min(sec, Math.max(0, video.duration - 0.1));
         });
 
-      for (let i = 0; i < times.length; i++) {
-        const second = times[i];
-        setVideoProgress(`Scanning frame ${i + 1}/${times.length}...`);
+      const buildSignature = (): FrameSignature => {
+        const sigCtx = sigCanvas.getContext("2d");
+        if (!sigCtx) throw new Error("Could not initialize scene detection canvas");
+        sigCtx.drawImage(video, 0, 0, sigCanvas.width, sigCanvas.height);
+        const img = sigCtx.getImageData(0, 0, sigCanvas.width, sigCanvas.height).data;
+        const values = new Uint8ClampedArray(sigCanvas.width * sigCanvas.height);
+        for (let i = 0, p = 0; i < img.length; i += 4, p++) {
+          values[p] = Math.round(0.299 * img[i] + 0.587 * img[i + 1] + 0.114 * img[i + 2]);
+        }
+        const avg = values.reduce((a, b) => a + b, 0) / values.length;
+        let bits = "";
+        for (let i = 0; i < values.length; i++) bits += values[i] > avg ? "1" : "0";
+        return { values, hash: bits };
+      };
+
+      let second = 0;
+      let scannedFrames = 0;
+      let previousSig: FrameSignature | null = null;
+      let previousAnalyzedSig: FrameSignature | null = null;
+      let stableRun = 0;
+      let skippedSimilar = 0;
+
+      while (second < duration && scannedFrames < mode.maxFrames) {
+        setVideoProgress(`Scanning ${Math.min(second, duration - 1)}s / ${duration}s...`);
         await seekTo(second);
+        scannedFrames += 1;
+        sampledSeconds.push(second);
 
         const srcW = video.videoWidth || 1280;
         const srcH = video.videoHeight || 720;
@@ -212,64 +280,106 @@ export default function Home() {
         if (!ctx) throw new Error("Could not initialize canvas");
         ctx.drawImage(video, 0, 0, targetW, targetH);
 
+        const signature = buildSignature();
+        const diffFromPrev = frameDistance(previousSig, signature);
+        const diffFromAnalyzed = frameDistance(previousAnalyzedSig, signature);
+        const rapidChange = diffFromPrev >= 0.17;
+        const moderateChange = diffFromPrev >= 0.1;
+        const uniqueScene =
+          !previousAnalyzedSig || diffFromAnalyzed >= 0.075 || rapidChange;
+
+        const hashPrefix = signature.hash.slice(0, 96);
+        const alreadySeen = visitedHashes.has(hashPrefix);
+        const shouldAnalyze = uniqueScene && !alreadySeen;
+
         const dataUrl = canvas.toDataURL("image/jpeg", 0.72);
         const base64 = dataUrl.split(",")[1];
-        const thumbW = Math.min(320, targetW);
-        const thumbH = Math.max(1, Math.round((targetH / targetW) * thumbW));
-        thumbCanvas.width = thumbW;
-        thumbCanvas.height = thumbH;
-        const tctx = thumbCanvas.getContext("2d");
-        if (!tctx) throw new Error("Could not initialize thumbnail canvas");
-        tctx.drawImage(video, 0, 0, thumbW, thumbH);
-        const thumbnailDataUrl = thumbCanvas.toDataURL("image/jpeg", 0.58);
         const h = String(Math.floor(second / 3600)).padStart(2, "0");
         const m = String(Math.floor((second % 3600) / 60)).padStart(2, "0");
         const s = String(second % 60).padStart(2, "0");
         const timecode = `${h}:${m}:${s}`;
 
-        const res = await fetch("/api/analyze-video-frame", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            second,
-            timecode,
-            imageBase64: base64,
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.error || "Frame analysis failed");
-        }
-        if (Array.isArray(data.risks) && data.risks.length > 0) {
-          findings.push({
-            second: data.second,
-            timecode: data.timecode,
-            risks: data.risks,
-            thumbnailDataUrl,
+        if (shouldAnalyze) {
+          const res = await fetch("/api/analyze-video-frame", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              second,
+              timecode,
+              imageBase64: base64,
+            }),
           });
+          const data = await res.json();
+          if (!res.ok) {
+            throw new Error(data.error || "Frame analysis failed");
+          }
+
+          visitedHashes.add(hashPrefix);
+          previousAnalyzedSig = signature;
+          skippedSimilar = 0;
+
+          if (Array.isArray(data.risks) && data.risks.length > 0) {
+            const thumbW = Math.min(320, targetW);
+            const thumbH = Math.max(1, Math.round((targetH / targetW) * thumbW));
+            thumbCanvas.width = thumbW;
+            thumbCanvas.height = thumbH;
+            const tctx = thumbCanvas.getContext("2d");
+            if (!tctx) throw new Error("Could not initialize thumbnail canvas");
+            tctx.drawImage(video, 0, 0, thumbW, thumbH);
+            const thumbnailDataUrl = thumbCanvas.toDataURL("image/jpeg", 0.58);
+
+            findings.push({
+              second: data.second,
+              timecode: data.timecode,
+              risks: data.risks,
+              thumbnailDataUrl,
+            });
+          }
+        } else {
+          skippedSimilar += 1;
         }
+
+        previousSig = signature;
+        stableRun = moderateChange || rapidChange ? 0 : stableRun + 1;
+        let step = mode.baseIntervalSeconds;
+        if (rapidChange) step = 1;
+        else if (moderateChange) step = 2;
+        else if (diffFromPrev >= 0.07) step = 4;
+        else if (stableRun >= 4) step = Math.max(mode.baseIntervalSeconds * 2, 14);
+        if (skippedSimilar >= 3) step = Math.max(step, mode.baseIntervalSeconds * 3);
+
+        second += step;
       }
 
+      await transcriptionPromise;
       setVideoFindings(findings);
+      const avgStep =
+        sampledSeconds.length > 1
+          ? Math.round((sampledSeconds[sampledSeconds.length - 1] - sampledSeconds[0]) / (sampledSeconds.length - 1))
+          : mode.baseIntervalSeconds;
       setVideoMeta({
-        sampledFrames: times.length,
-        intervalSeconds: mode.intervalSeconds * stride,
+        sampledFrames: sampledSeconds.length,
+        intervalSeconds: Math.max(1, avgStep),
       });
-      setVideoProgress(`Scan complete (${findings.length} risky timecodes).`);
+      setVideoProgress(`Scan complete (${findings.length} risky timecodes, ${sampledSeconds.length} scene samples).`);
     } catch (err) {
       setVideoFindings([]);
       setVideoMeta(null);
       setVideoProgress("");
       setVideoError(err instanceof Error ? err.message : "Video upload failed");
     } finally {
+      await transcriptionPromise;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
       setVideoUploading(false);
       if (videoInputRef.current) videoInputRef.current.value = "";
     }
-  }, []);
+  }, [transcribeVideo, videoScanMode]);
 
   const handleSubmit = async () => {
-    const scriptText = inputMode === "gdoc" ? gdocPreview?.text || script : script;
+    const baseScript = inputMode === "gdoc" ? gdocPreview?.text || script : script;
+    const scriptText = [baseScript.trim(), videoTranscript.trim()]
+      .filter(Boolean)
+      .join("\n\n--- VIDEO TRANSCRIPT ---\n\n");
     if (!scriptText.trim()) return;
     setRunning(true);
     setError(null);
@@ -317,7 +427,7 @@ export default function Home() {
         videoFindings: videoFindings.length > 0 ? videoFindings : undefined,
       };
 
-      if (inputMode === "gdoc" && gdocUrl && !gdocPreview) {
+      if (inputMode === "gdoc" && gdocUrl && !gdocPreview && !videoTranscript.trim()) {
         body.gdocUrl = gdocUrl;
       } else {
         body.script = scriptText;
@@ -382,7 +492,10 @@ export default function Home() {
     }
   };
 
-  const currentScript = inputMode === "gdoc" ? gdocPreview?.text || "" : script;
+  const currentScript = (() => {
+    const baseScript = inputMode === "gdoc" ? gdocPreview?.text || "" : script;
+    return [baseScript.trim(), videoTranscript.trim()].filter(Boolean).join("\n");
+  })();
 
   return (
     <div className="min-h-screen p-4 max-w-5xl mx-auto">
@@ -657,7 +770,7 @@ export default function Home() {
               Video Scan (MVP)
             </label>
             <p className="text-[10px] text-[var(--text-dim)] mb-2">
-              Upload one video. Frames are sampled ~every 10s and scanned for privacy/graphic/profanity risks.
+              Upload one video. We transcribe audio with ElevenLabs and scan adaptive scene frames (1s during rapid cuts, sparse in stable scenes).
             </p>
             <select
               value={videoScanMode}
@@ -690,9 +803,26 @@ export default function Home() {
             {videoUploading && videoProgress && (
               <div className="mt-2 text-[10px] text-[var(--text-dim)]">{videoProgress}</div>
             )}
+            {videoTranscribing && (
+              <div className="mt-2 text-[10px] text-[var(--text-dim)]">Transcribing audio with ElevenLabs...</div>
+            )}
+            {videoTranscriptError && (
+              <div className="mt-2 text-[10px] text-[var(--red)]">{videoTranscriptError}</div>
+            )}
+            {videoTranscript && (
+              <div className="mt-2 border border-[var(--border)] bg-[var(--bg-surface)] p-2 text-[10px]">
+                <div className="text-[var(--text-bright)] mb-1">
+                  Transcript captured ({videoTranscript.length.toLocaleString()} chars)
+                </div>
+                <div className="text-[var(--text-dim)] max-h-20 overflow-auto whitespace-pre-wrap">
+                  {videoTranscript.slice(0, 700)}
+                  {videoTranscript.length > 700 ? "..." : ""}
+                </div>
+              </div>
+            )}
             {videoMeta && (
               <div className="mt-2 text-[10px] text-[var(--text-dim)]">
-                Sampled {videoMeta.sampledFrames} frames (about every {videoMeta.intervalSeconds}s)
+                Sampled {videoMeta.sampledFrames} scene frames (average step ~{videoMeta.intervalSeconds}s)
               </div>
             )}
             {videoFindings.length > 0 && (
@@ -713,7 +843,7 @@ export default function Home() {
 
           <button
             onClick={handleSubmit}
-            disabled={running || uploading || videoUploading || !currentScript.trim()}
+            disabled={running || uploading || videoUploading || videoTranscribing || !currentScript.trim()}
             className="w-full py-3 text-sm uppercase tracking-widest border border-[var(--border)] text-[var(--text-bright)] bg-[var(--bg-surface)] hover:bg-[var(--bg-elevated)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             {running ? "ANALYZING..." : "ANALYZE SCRIPT"}
