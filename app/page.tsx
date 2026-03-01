@@ -28,8 +28,17 @@ const FOOTAGE_TYPES = [
   "Bodycam", "911 Calls", "Court Footage", "Interrogation",
   "Surveillance", "News Clips", "Photos", "Reenactment",
 ];
-const VIDEO_BASE_INTERVAL_SECONDS = 10;
-const VIDEO_MAX_FRAMES = 40;
+type VideoScanMode = "quick" | "balanced" | "deep";
+const VIDEO_SCAN_MODES: Array<{
+  value: VideoScanMode;
+  label: string;
+  intervalSeconds: number;
+  maxFrames: number;
+}> = [
+  { value: "quick", label: "QUICK (~60 frames max)", intervalSeconds: 20, maxFrames: 60 },
+  { value: "balanced", label: "BALANCED (~120 frames max)", intervalSeconds: 10, maxFrames: 120 },
+  { value: "deep", label: "DEEP (~360 frames max)", intervalSeconds: 10, maxFrames: 360 },
+];
 
 type AnalysisMode = "full" | "legal_only" | "monetization_only";
 
@@ -65,6 +74,7 @@ export default function Home() {
   const [videoUploading, setVideoUploading] = useState(false);
   const [videoError, setVideoError] = useState<string | null>(null);
   const [videoProgress, setVideoProgress] = useState<string>("");
+  const [videoScanMode, setVideoScanMode] = useState<VideoScanMode>("balanced");
   const [videoMeta, setVideoMeta] = useState<{ sampledFrames: number; intervalSeconds: number } | null>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
@@ -161,13 +171,12 @@ export default function Home() {
       const duration = Number.isFinite(video.duration) ? Math.max(1, Math.floor(video.duration)) : 0;
       if (duration <= 0) throw new Error("Invalid video duration");
 
-      const step = Math.max(
-        VIDEO_BASE_INTERVAL_SECONDS,
-        Math.ceil(duration / VIDEO_MAX_FRAMES)
-      );
-      const times: number[] = [];
-      for (let t = 0; t < duration; t += step) times.push(t);
-      if (times.length === 0) times.push(0);
+      const mode = VIDEO_SCAN_MODES.find((m) => m.value === videoScanMode) ?? VIDEO_SCAN_MODES[1];
+      const initialTimes: number[] = [];
+      for (let t = 0; t < duration; t += mode.intervalSeconds) initialTimes.push(t);
+      if (initialTimes.length === 0) initialTimes.push(0);
+      const stride = Math.max(1, Math.ceil(initialTimes.length / mode.maxFrames));
+      const times = initialTimes.filter((_, idx) => idx % stride === 0).slice(0, mode.maxFrames);
 
       const canvas = document.createElement("canvas");
       const findings: VideoFrameFinding[] = [];
@@ -234,7 +243,7 @@ export default function Home() {
       setVideoFindings(findings);
       setVideoMeta({
         sampledFrames: times.length,
-        intervalSeconds: step,
+        intervalSeconds: mode.intervalSeconds * stride,
       });
       setVideoProgress(`Scan complete (${findings.length} risky timecodes).`);
     } catch (err) {
@@ -640,6 +649,16 @@ export default function Home() {
             <p className="text-[10px] text-[var(--text-dim)] mb-2">
               Upload one video. Frames are sampled ~every 10s and scanned for privacy/graphic/profanity risks.
             </p>
+            <select
+              value={videoScanMode}
+              onChange={(e) => setVideoScanMode(e.target.value as VideoScanMode)}
+              disabled={running || videoUploading}
+              className="w-full mb-2"
+            >
+              {VIDEO_SCAN_MODES.map((m) => (
+                <option key={m.value} value={m.value}>{m.label}</option>
+              ))}
+            </select>
             <input
               ref={videoInputRef}
               type="file"
