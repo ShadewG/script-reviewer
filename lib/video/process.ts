@@ -64,10 +64,8 @@ function toTimecode(second: number): string {
 }
 
 async function extractFrames(videoPath: string, outputDir: string): Promise<void> {
-  const ffmpegPath =
-    ffmpegStatic && existsSync(ffmpegStatic) ? ffmpegStatic : "ffmpeg";
   const pattern = join(outputDir, "frame-%05d.jpg");
-  await execFileAsync(ffmpegPath, [
+  const args = [
     "-hide_banner",
     "-loglevel",
     "error",
@@ -78,7 +76,23 @@ async function extractFrames(videoPath: string, outputDir: string): Promise<void
     "-q:v",
     "3",
     pattern,
-  ]);
+  ];
+
+  try {
+    // Prefer system ffmpeg in containers (more reliable on Alpine)
+    await execFileAsync("ffmpeg", args);
+    return;
+  } catch (err) {
+    const code = (err as { code?: string }).code;
+    if (code !== "ENOENT") throw err;
+  }
+
+  if (ffmpegStatic && existsSync(ffmpegStatic)) {
+    await execFileAsync(ffmpegStatic, args);
+    return;
+  }
+
+  throw new Error("ffmpeg not found in runtime");
 }
 
 async function analyzeFrame(base64: string): Promise<VideoFrameRisk[]> {
