@@ -171,7 +171,7 @@ export default function AnnotatedScriptView({
   return (
     <div className="flex gap-4">
       {/* Script Column */}
-      <div className="flex-1 overflow-auto max-h-[700px] border border-[var(--border)] bg-[var(--bg-surface)]">
+      <div className="flex-1 overflow-auto max-h-[700px] border border-[var(--border)] bg-[var(--bg-surface)]" style={{ fontFamily: '"Courier New", Courier, monospace' }}>
         {lines.map((line, i) => {
           const lineNum = i + 1;
           const flags = lineFlags.get(lineNum);
@@ -189,7 +189,7 @@ export default function AnnotatedScriptView({
               <div
                 ref={isSelected ? selectedRef : undefined}
                 onClick={() => flags && setSelectedLine(isSelected ? null : lineNum)}
-                className={`flex text-xs leading-6 ${flags ? "cursor-pointer hover:brightness-110" : ""} ${
+                className={`flex text-[13px] leading-7 ${flags ? "cursor-pointer hover:brightness-110" : ""} ${
                   isSelected ? "ring-1 ring-[var(--text-dim)]" : ""
                 }`}
                 style={{ background: bgColor }}
@@ -212,61 +212,61 @@ export default function AnnotatedScriptView({
 
               {/* Inline flag details */}
               {isSelected && flags && (
-                <div className="border-l-2 border-[var(--text-dim)] ml-10 pl-3 py-2 bg-[var(--bg-elevated)]">
+                <div className="border-l-2 border-[var(--text-dim)] ml-10 pl-4 py-3 bg-[var(--bg-elevated)]" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }}>
                   {flags.map((fd, fi) => {
                     const f = fd.flag;
                     if (fd.type === "legal") {
                       const lf = f as LegalFlag;
                       return (
-                        <div key={fi} className="mb-2 last:mb-0">
-                          <div className="flex items-center gap-1.5 mb-1">
+                        <div key={fi} className="mb-3 last:mb-0">
+                          <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
                             <span className="w-1.5 h-1.5 bg-[var(--red)]" />
-                            <span className="text-[10px] uppercase text-[var(--red)]">
+                            <span className="text-xs uppercase text-[var(--red)] font-medium">
                               {lf.severity} — {lf.riskType.replaceAll("_", " ")}
                             </span>
-                            <span className="text-[10px] text-[var(--text-dim)]">
+                            <span className="text-xs text-[var(--text-dim)]">
                               — {lf.person}
                             </span>
                             {lf.counselReview && (
-                              <span className="text-[10px] text-[var(--red)] border border-[var(--red)] px-1">
+                              <span className="text-xs text-[var(--red)] border border-[var(--red)] px-1">
                                 COUNSEL
                               </span>
                             )}
                             {"agreementCount" in lf && (
-                              <span className="text-[10px] text-[var(--text-dim)] border border-[var(--border)] px-1">
+                              <span className="text-xs text-[var(--text-dim)] border border-[var(--border)] px-1">
                                 {(lf as unknown as { agreementCount: number }).agreementCount}/2
                               </span>
                             )}
                           </div>
-                          <p className="text-[10px] text-[var(--text-dim)]">{lf.reasoning}</p>
+                          <p className="text-xs text-[var(--text-dim)] leading-relaxed">{lf.reasoning}</p>
                           {lf.stateCitation && (
-                            <p className="text-[10px] text-[var(--text-dim)] mt-0.5">Cite: {lf.stateCitation}</p>
+                            <p className="text-xs text-[var(--text-dim)] mt-1">Cite: {lf.stateCitation}</p>
                           )}
-                          <p className="text-[10px] text-[var(--green)] mt-0.5">Safer: {lf.saferRewrite}</p>
+                          <p className="text-xs text-[var(--green)] mt-1">Safer: {lf.saferRewrite}</p>
                         </div>
                       );
                     } else {
                       const pf = f as PolicyFlag;
                       return (
-                        <div key={fi} className="mb-2 last:mb-0">
-                          <div className="flex items-center gap-1.5 mb-1">
+                        <div key={fi} className="mb-3 last:mb-0">
+                          <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
                             <span className="w-1.5 h-1.5 bg-[var(--yellow)]" />
-                            <span className="text-[10px] uppercase text-[var(--yellow)]">
+                            <span className="text-xs uppercase text-[var(--yellow)] font-medium">
                               {pf.severity} — {pf.category.replaceAll("_", " ")}
                             </span>
                             <span
-                              className="text-[10px] uppercase px-1 border"
+                              className="text-xs uppercase px-1 border"
                               style={{ color: pf.impact === "full_ads" ? "var(--green)" : pf.impact === "limited_ads" ? "var(--yellow)" : "var(--red)", borderColor: pf.impact === "full_ads" ? "var(--green)" : pf.impact === "limited_ads" ? "var(--yellow)" : "var(--red)" }}
                             >
                               {pf.impact.replaceAll("_", " ")}
                             </span>
                           </div>
-                          <p className="text-[10px] text-[var(--text-dim)]">{pf.reasoning}</p>
+                          <p className="text-xs text-[var(--text-dim)] leading-relaxed">{pf.reasoning}</p>
                           {pf.policyQuote && (
-                            <p className="text-[10px] text-[var(--text-dim)] italic mt-0.5">Policy: {pf.policyQuote}</p>
+                            <p className="text-xs text-[var(--text-dim)] italic mt-1">Policy: {pf.policyQuote}</p>
                           )}
                           {pf.saferRewrite && (
-                            <p className="text-[10px] text-[var(--green)] mt-0.5">Safer: {pf.saferRewrite}</p>
+                            <p className="text-xs text-[var(--green)] mt-1">Safer: {pf.saferRewrite}</p>
                           )}
                         </div>
                       );
