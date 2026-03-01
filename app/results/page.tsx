@@ -1,11 +1,62 @@
 "use client";
 
-import { useEffect, useState, Suspense } from "react";
+import { useEffect, useState, useMemo, useCallback, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import type { SynthesisReport, LegalFlag, PolicyFlag } from "@/lib/pipeline/types";
 import type { DocumentFacts } from "@/lib/documents/types";
 import AnnotatedScriptView from "./components/AnnotatedScriptView";
 import type { VideoFrameFinding } from "@/lib/pipeline/types";
+import { YT_POLICIES } from "@/lib/policies/youtube-policies";
+
+/* ── Severity utilities ── */
+type Severity = "low" | "medium" | "high" | "severe";
+const SEV_ORDER: Record<string, number> = { low: 0, medium: 1, high: 2, severe: 3 };
+function compareSeverity(a: string, b: string) {
+  return (SEV_ORDER[b] ?? 0) - (SEV_ORDER[a] ?? 0);
+}
+function meetsMinSeverity(sev: string, min: Severity): boolean {
+  return (SEV_ORDER[sev] ?? 0) >= (SEV_ORDER[min] ?? 0);
+}
+
+/* ── Loading Skeleton ── */
+function LoadingSkeleton() {
+  const pulse = "animate-pulse bg-[var(--bg-surface)] rounded";
+  return (
+    <div className="min-h-screen p-4 max-w-6xl mx-auto">
+      {/* Header */}
+      <div className="border-b border-[var(--border)] pb-4 mb-6 flex justify-between items-center">
+        <div>
+          <div className={`h-5 w-40 ${pulse} mb-2`} />
+          <div className={`h-3 w-64 ${pulse}`} />
+        </div>
+        <div className="flex gap-2">
+          <div className={`h-9 w-24 ${pulse}`} />
+          <div className={`h-9 w-24 ${pulse}`} />
+        </div>
+      </div>
+      {/* Verdict banner */}
+      <div className={`h-28 w-full ${pulse} mb-6`} />
+      {/* Risk dashboard */}
+      <div className="grid grid-cols-5 gap-2 mb-6">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <div key={i} className={`h-16 ${pulse}`} />
+        ))}
+      </div>
+      {/* Tabs */}
+      <div className="flex gap-4 mb-4">
+        {Array.from({ length: 7 }).map((_, i) => (
+          <div key={i} className={`h-8 w-16 ${pulse}`} />
+        ))}
+      </div>
+      {/* Content cards */}
+      <div className="space-y-3">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className={`h-20 w-full ${pulse}`} />
+        ))}
+      </div>
+    </div>
+  );
+}
 
 interface ReviewData {
   id: string;
@@ -220,7 +271,9 @@ function ResultsContent() {
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
   const [copied, setCopied] = useState<"report" | "link" | null>(null);
   const [expandedDocs, setExpandedDocs] = useState<Set<number>>(new Set());
-  const [expandedVideo, setExpandedVideo] = useState<number | null>(null);
+  const [expandedVideoSet, setExpandedVideoSet] = useState<Set<number>>(new Set());
+  const [minSeverity, setMinSeverity] = useState<Severity>("low");
+  const [flagFilter, setFlagFilter] = useState<"all" | "legal" | "policy">("all");
 
   useEffect(() => {
     if (!id) return;
@@ -234,7 +287,7 @@ function ResultsContent() {
   }, [id]);
 
   if (!id) return <div className="p-8 text-[var(--text-dim)]">No review ID</div>;
-  if (loading) return <div className="p-8 text-[var(--text-dim)]">LOADING...</div>;
+  if (loading) return <LoadingSkeleton />;
   if (!data) return <div className="p-8 text-[var(--red)]">Review not found</div>;
 
   const report = data.synthesis;
@@ -551,13 +604,20 @@ function ResultsContent() {
                       const order: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
                       return (order[r.severity] ?? 0) > (order[worst] ?? 0) ? r.severity : worst;
                     }, "low");
-                    const isExpanded = expandedVideo === i;
+                    const isExpanded = expandedVideoSet.has(i);
                     const categories = [...new Set(item.risks.map(r => r.category.replaceAll("_", " ")))];
 
                     return (
                       <div key={`${item.timecode}-${i}`}>
                         <div
-                          onClick={() => setExpandedVideo(isExpanded ? null : i)}
+                          onClick={() =>
+                            setExpandedVideoSet((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(i)) next.delete(i);
+                              else next.add(i);
+                              return next;
+                            })
+                          }
                           className={`grid grid-cols-[90px_80px_1fr_60px] gap-3 px-4 py-3 cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors ${
                             isExpanded ? "bg-[var(--bg-elevated)]" : ""
                           } ${i > 0 ? "border-t border-[var(--border)]" : ""}`}

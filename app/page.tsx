@@ -33,11 +33,34 @@ const VIDEO_SCAN_MODES: Array<{
   value: VideoScanMode;
   label: string;
   baseIntervalSeconds: number;
+  floorIntervalSeconds: number;
+  sceneProbeSeconds: number;
   maxFrames: number;
 }> = [
-  { value: "quick", label: "QUICK (~60 frames max)", baseIntervalSeconds: 12, maxFrames: 60 },
-  { value: "balanced", label: "BALANCED (~120 frames max)", baseIntervalSeconds: 8, maxFrames: 120 },
-  { value: "deep", label: "DEEP (~360 frames max)", baseIntervalSeconds: 6, maxFrames: 360 },
+  {
+    value: "quick",
+    label: "QUICK (~120 frames max)",
+    baseIntervalSeconds: 10,
+    floorIntervalSeconds: 8,
+    sceneProbeSeconds: 3,
+    maxFrames: 120,
+  },
+  {
+    value: "balanced",
+    label: "BALANCED (~220 frames max)",
+    baseIntervalSeconds: 8,
+    floorIntervalSeconds: 5,
+    sceneProbeSeconds: 2,
+    maxFrames: 220,
+  },
+  {
+    value: "deep",
+    label: "DEEP (~420 frames max)",
+    baseIntervalSeconds: 6,
+    floorIntervalSeconds: 3,
+    sceneProbeSeconds: 1,
+    maxFrames: 420,
+  },
 ];
 
 type AnalysisMode = "full" | "legal_only" | "monetization_only";
@@ -60,6 +83,12 @@ type FrameSignature = {
   hash: string;
 };
 
+type SceneSegment = {
+  id: number;
+  start: number;
+  end: number;
+};
+
 function frameDistance(a: FrameSignature | null, b: FrameSignature | null): number {
   if (!a || !b || a.values.length !== b.values.length) return 1;
   let sum = 0;
@@ -67,6 +96,32 @@ function frameDistance(a: FrameSignature | null, b: FrameSignature | null): numb
     sum += Math.abs(a.values[i] - b.values[i]);
   }
   return sum / (a.values.length * 255);
+}
+
+function normalizeRiskText(text?: string): string {
+  return (text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function riskSemanticKey(risk: { category: string; policyName: string; detectedText?: string }): string {
+  const policy = normalizeRiskText(risk.policyName);
+  const detected = normalizeRiskText(risk.detectedText).slice(0, 80);
+  return `${risk.category}|${policy}|${detected}`;
+}
+
+function hasHardSignal(
+  risk: { category: string; severity: string; policyName: string; reasoning: string; detectedText?: string }
+): boolean {
+  if (risk.severity === "high" || risk.severity === "severe") return true;
+  const joined = normalizeRiskText(
+    `${risk.policyName} ${risk.reasoning} ${risk.detectedText ?? ""}`
+  );
+  return /\b(address|street|license plate|plate number|phone number|email|ssn|passport|driver|minor|child|gore|graphic|blood|corpse|drug|cocaine|heroin|meth|weapon|gun|rifle|knife)\b/.test(
+    joined
+  );
 }
 
 export default function Home() {
@@ -223,8 +278,6 @@ export default function Home() {
       const sigCanvas = document.createElement("canvas");
       sigCanvas.width = 48;
       sigCanvas.height = 27;
-      const findings: VideoFrameFinding[] = [];
-      const visitedHashes = new Set<string>();
       const sampledSeconds: number[] = [];
 
       const seekTo = (sec: number) =>
@@ -257,18 +310,79 @@ export default function Home() {
         return { values, hash: bits };
       };
 
-      let second = 0;
-      let scannedFrames = 0;
-      let previousSig: FrameSignature | null = null;
-      let previousAnalyzedSig: FrameSignature | null = null;
-      let stableRun = 0;
-      let skippedSimilar = 0;
+      const probeTimes: number[] = [];
+      for (let t = 0; t < duration; t += mode.sceneProbeSeconds) probeTimes.push(t);
+      if (!probeTimes.includes(duration - 1)) probeTimes.push(Math.max(0, duration - 1));
+      probeTimes.sort((a, b) => a - b);
 
-      while (second < duration && scannedFrames < mode.maxFrames) {
-        setVideoProgress(`Scanning ${Math.min(second, duration - 1)}s / ${duration}s...`);
-        await seekTo(second);
-        scannedFrames += 1;
+      const boundaries = new Set<number>([0, Math.max(0, duration - 1)]);
+      let prevProbeSig: FrameSignature | null = null;
+      for (let i = 0; i < probeTimes.length; i++) {
+        setVideoProgress(`Detecting scenes ${i + 1}/${probeTimes.length}...`);
+        await seekTo(probeTimes[i]);
+        const sig = buildSignature();
+        const diff = frameDistance(prevProbeSig, sig);
+        if (prevProbeSig && diff >= 0.17) boundaries.add(probeTimes[i]);
+        prevProbeSig = sig;
+      }
+
+      const sortedBoundaries = [...boundaries].sort((a, b) => a - b);
+      const scenes: SceneSegment[] = [];
+      for (let i = 0; i < sortedBoundaries.length; i++) {
+        const start = sortedBoundaries[i];
+        const end = i + 1 < sortedBoundaries.length ? sortedBoundaries[i + 1] : duration - 1;
+        if (end <= start) continue;
+        scenes.push({ id: scenes.length, start, end });
+      }
+
+      const candidateTimes = new Set<number>();
+      for (let t = 0; t < duration; t += mode.floorIntervalSeconds) candidateTimes.add(t);
+      for (const scene of scenes) {
+        const len = Math.max(1, scene.end - scene.start);
+        let targetCount = 1;
+        if (len > 60) targetCount = 6;
+        else if (len > 20) targetCount = 4;
+        else if (len > 5) targetCount = 2;
+
+        candidateTimes.add(scene.start);
+        candidateTimes.add(scene.end);
+        for (let i = 1; i <= targetCount; i++) {
+          const ratio = i / (targetCount + 1);
+          candidateTimes.add(Math.round(scene.start + len * ratio));
+        }
+      }
+
+      let queue = [...candidateTimes]
+        .filter((t) => t >= 0 && t < duration)
+        .sort((a, b) => a - b);
+      if (queue.length > mode.maxFrames) {
+        const stride = Math.max(1, Math.ceil(queue.length / mode.maxFrames));
+        queue = queue.filter((_, i) => i % stride === 0).slice(0, mode.maxFrames);
+      }
+
+      const sceneBySecond = (sec: number): SceneSegment =>
+        scenes.find((s) => sec >= s.start && sec <= s.end) ??
+        { id: -1, start: 0, end: duration - 1 };
+
+      const findings: VideoFrameFinding[] = [];
+      const visualSeen = new Set<string>();
+      const semanticSeen = new Map<string, number>();
+      const pendingWeak = new Map<
+        string,
+        Array<{ second: number; risk: VideoFrameFinding["risks"][number] }>
+      >();
+      const sceneCounts = new Map<number, number>();
+      const sceneCategories = new Map<number, Set<string>>();
+      const visitedSeconds = new Set<number>();
+
+      let idx = 0;
+      while (idx < queue.length && sampledSeconds.length < mode.maxFrames) {
+        const second = queue[idx++];
+        if (visitedSeconds.has(second)) continue;
+        visitedSeconds.add(second);
         sampledSeconds.push(second);
+        setVideoProgress(`Scanning frame ${sampledSeconds.length}/${Math.min(queue.length, mode.maxFrames)}...`);
+        await seekTo(second);
 
         const srcW = video.videoWidth || 1280;
         const srcH = video.videoHeight || 720;
@@ -281,16 +395,9 @@ export default function Home() {
         ctx.drawImage(video, 0, 0, targetW, targetH);
 
         const signature = buildSignature();
-        const diffFromPrev = frameDistance(previousSig, signature);
-        const diffFromAnalyzed = frameDistance(previousAnalyzedSig, signature);
-        const rapidChange = diffFromPrev >= 0.17;
-        const moderateChange = diffFromPrev >= 0.1;
-        const uniqueScene =
-          !previousAnalyzedSig || diffFromAnalyzed >= 0.075 || rapidChange;
-
-        const hashPrefix = signature.hash.slice(0, 96);
-        const alreadySeen = visitedHashes.has(hashPrefix);
-        const shouldAnalyze = uniqueScene && !alreadySeen;
+        const hashKey = signature.hash.slice(0, 120);
+        if (visualSeen.has(hashKey)) continue;
+        visualSeen.add(hashKey);
 
         const dataUrl = canvas.toDataURL("image/jpeg", 0.72);
         const base64 = dataUrl.split(",")[1];
@@ -299,56 +406,63 @@ export default function Home() {
         const s = String(second % 60).padStart(2, "0");
         const timecode = `${h}:${m}:${s}`;
 
-        if (shouldAnalyze) {
-          const res = await fetch("/api/analyze-video-frame", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              second,
-              timecode,
-              imageBase64: base64,
-            }),
-          });
-          const data = await res.json();
-          if (!res.ok) {
-            throw new Error(data.error || "Frame analysis failed");
-          }
+        const res = await fetch("/api/analyze-video-frame", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ second, timecode, imageBase64: base64 }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Frame analysis failed");
+        if (!Array.isArray(data.risks) || data.risks.length === 0) continue;
 
-          visitedHashes.add(hashPrefix);
-          previousAnalyzedSig = signature;
-          skippedSimilar = 0;
-
-          if (Array.isArray(data.risks) && data.risks.length > 0) {
-            const thumbW = Math.min(320, targetW);
-            const thumbH = Math.max(1, Math.round((targetH / targetW) * thumbW));
-            thumbCanvas.width = thumbW;
-            thumbCanvas.height = thumbH;
-            const tctx = thumbCanvas.getContext("2d");
-            if (!tctx) throw new Error("Could not initialize thumbnail canvas");
-            tctx.drawImage(video, 0, 0, thumbW, thumbH);
-            const thumbnailDataUrl = thumbCanvas.toDataURL("image/jpeg", 0.58);
-
-            findings.push({
-              second: data.second,
-              timecode: data.timecode,
-              risks: data.risks,
-              thumbnailDataUrl,
-            });
-          }
-        } else {
-          skippedSimilar += 1;
+        for (const delta of [-2, -1, 1, 2]) {
+          const t = second + delta;
+          if (t >= 0 && t < duration && !visitedSeconds.has(t)) queue.push(t);
         }
 
-        previousSig = signature;
-        stableRun = moderateChange || rapidChange ? 0 : stableRun + 1;
-        let step = mode.baseIntervalSeconds;
-        if (rapidChange) step = 1;
-        else if (moderateChange) step = 2;
-        else if (diffFromPrev >= 0.07) step = 4;
-        else if (stableRun >= 4) step = Math.max(mode.baseIntervalSeconds * 2, 14);
-        if (skippedSimilar >= 3) step = Math.max(step, mode.baseIntervalSeconds * 3);
+        const scene = sceneBySecond(second);
+        const sceneCount = sceneCounts.get(scene.id) ?? 0;
+        const cats = sceneCategories.get(scene.id) ?? new Set<string>();
+        sceneCategories.set(scene.id, cats);
 
-        second += step;
+        const keptRisks: VideoFrameFinding["risks"] = [];
+        for (const risk of data.risks) {
+          const key = riskSemanticKey(risk);
+          const prevAt = semanticSeen.get(key);
+          if (typeof prevAt === "number" && Math.abs(prevAt - second) <= 12) continue;
+
+          const isWeak = !hasHardSignal(risk) && (risk.severity === "low" || risk.severity === "medium");
+          if (isWeak) {
+            const pending = pendingWeak.get(key) ?? [];
+            pending.push({ second, risk });
+            pendingWeak.set(key, pending);
+            const confirmed = pending.some((p) => p !== pending[0] && Math.abs(p.second - second) <= 12);
+            if (!confirmed) continue;
+          }
+
+          if (sceneCount >= 3 && cats.has(risk.category)) continue;
+          semanticSeen.set(key, second);
+          cats.add(risk.category);
+          keptRisks.push(risk);
+        }
+
+        if (keptRisks.length === 0) continue;
+        const thumbW = Math.min(320, targetW);
+        const thumbH = Math.max(1, Math.round((targetH / targetW) * thumbW));
+        thumbCanvas.width = thumbW;
+        thumbCanvas.height = thumbH;
+        const tctx = thumbCanvas.getContext("2d");
+        if (!tctx) throw new Error("Could not initialize thumbnail canvas");
+        tctx.drawImage(video, 0, 0, thumbW, thumbH);
+        const thumbnailDataUrl = thumbCanvas.toDataURL("image/jpeg", 0.58);
+        findings.push({
+          second: data.second,
+          timecode: data.timecode,
+          risks: keptRisks,
+          thumbnailDataUrl,
+        });
+        sceneCounts.set(scene.id, sceneCount + 1);
+        queue.sort((a, b) => a - b);
       }
 
       await transcriptionPromise;
