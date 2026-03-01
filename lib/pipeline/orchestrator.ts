@@ -352,6 +352,9 @@ export async function runPipeline(
     // Inject the actual flags (prompt told Claude to return empty arrays to save tokens)
     report.legalFlags = legalFlags;
     report.policyFlags = policyFlags;
+    report.videoTimeline = (metadata.videoFindings ?? []).filter(
+      (f) => Array.isArray(f.risks) && f.risks.length > 0
+    );
     // Keep monetization dashboard consistent with actual policy flags shown in UI.
     report.riskDashboard.monetization =
       deriveMonetizationFromPolicyFlags(policyFlags);
@@ -382,6 +385,9 @@ export async function runPipeline(
       criticalEdits: [],
       recommendedEdits: [],
       edsaChecklist: [],
+      videoTimeline: (metadata.videoFindings ?? []).filter(
+        (f) => Array.isArray(f.risks) && f.risks.length > 0
+      ),
       legalFlags,
       policyFlags,
     };

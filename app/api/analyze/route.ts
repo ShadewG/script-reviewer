@@ -76,6 +76,7 @@ const VideoFindingsSchema = z.array(
   z.object({
     second: z.number().int().min(0),
     timecode: z.string().max(20),
+    thumbnailDataUrl: z.string().max(600000).optional(),
     risks: z.array(
       z.object({
         category: z.enum(["community_guidelines", "age_restriction", "monetization", "privacy"]),

@@ -5,6 +5,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import type { SynthesisReport, LegalFlag, PolicyFlag } from "@/lib/pipeline/types";
 import type { DocumentFacts } from "@/lib/documents/types";
 import AnnotatedScriptView from "./components/AnnotatedScriptView";
+import type { VideoFrameFinding } from "@/lib/pipeline/types";
 
 interface ReviewData {
   id: string;
@@ -159,7 +160,56 @@ function getRiskyLines(
     }));
 }
 
-type TabKey = "overview" | "script" | "legal" | "youtube" | "research" | "raw";
+function parseVideoSecond(tc: string): number {
+  const m = tc.match(/^(\d\d):(\d\d):(\d\d)$/);
+  if (!m) return 0;
+  return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+}
+
+function buildVideoTimeline(
+  report: SynthesisReport | null,
+  policyFlags: PolicyFlag[]
+): VideoFrameFinding[] {
+  const fromReport = report?.videoTimeline?.filter((v) => v.risks?.length > 0) ?? [];
+  if (fromReport.length > 0) {
+    return [...fromReport].sort((a, b) => a.second - b.second);
+  }
+
+  // Fallback for older reports: derive timeline events from policy flags containing [Video HH:MM:SS]
+  const map = new Map<string, VideoFrameFinding>();
+  for (const flag of policyFlags) {
+    const text = String(flag.text ?? "");
+    const m = text.match(/\[Video\s+(\d\d:\d\d:\d\d)\]/);
+    if (!m) continue;
+    const timecode = m[1];
+    const second = parseVideoSecond(timecode);
+    const existing = map.get(timecode) ?? {
+      second,
+      timecode,
+      risks: [],
+    };
+    existing.risks.push({
+      category:
+        flag.category === "community_guidelines"
+          ? "community_guidelines"
+          : flag.category === "age_restriction"
+          ? "age_restriction"
+          : flag.category === "monetization"
+          ? "monetization"
+          : "privacy",
+      severity: flag.severity,
+      impact: flag.impact,
+      policyName: flag.policyName,
+      reasoning: flag.reasoning,
+      detectedText: text,
+    });
+    map.set(timecode, existing);
+  }
+
+  return [...map.values()].sort((a, b) => a.second - b.second);
+}
+
+type TabKey = "overview" | "video" | "script" | "legal" | "youtube" | "research" | "raw";
 
 function ResultsContent() {
   const searchParams = useSearchParams();
@@ -189,6 +239,7 @@ function ResultsContent() {
   const report = data.synthesis;
   const allLegalFlags = report?.legalFlags ?? data.legalFlags ?? [];
   const allPolicyFlags = report?.policyFlags ?? data.youtubeFlags ?? [];
+  const videoTimeline = buildVideoTimeline(report, allPolicyFlags);
   const riskyLines = getRiskyLines(data.scriptText, allLegalFlags, allPolicyFlags);
 
   return (
@@ -292,7 +343,7 @@ function ResultsContent() {
 
       {/* Tabs */}
       <div className="flex gap-0 border-b border-[var(--border)] mb-4">
-        {(["overview", "script", "legal", "youtube", "research", "raw"] as const).map((tab) => (
+        {(["overview", "video", "script", "legal", "youtube", "research", "raw"] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -467,6 +518,65 @@ function ResultsContent() {
             caseStatus={data.caseStatus}
             hasMinors={data.hasMinors}
           />
+        )}
+
+        {activeTab === "video" && (
+          <div className="space-y-4">
+            {videoTimeline.length === 0 ? (
+              <p className="text-xs text-[var(--text-dim)]">No video timeline findings for this report.</p>
+            ) : (
+              <div className="relative pl-6">
+                <div className="absolute left-2 top-0 bottom-0 w-px bg-[var(--border)]" />
+                <div className="space-y-3">
+                  {videoTimeline.map((item, i) => (
+                    <div key={`${item.timecode}-${i}`} className="relative">
+                      <div className="absolute -left-[18px] top-3 w-2 h-2 bg-[var(--amber)]" />
+                      <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-[10px] uppercase tracking-wider text-[var(--amber)] border border-[var(--amber)] px-1">
+                            {item.timecode}
+                          </span>
+                          <span className="text-[10px] text-[var(--text-dim)]">
+                            {item.risks.length} comment{item.risks.length === 1 ? "" : "s"}
+                          </span>
+                        </div>
+                        {item.thumbnailDataUrl && (
+                          <img
+                            src={item.thumbnailDataUrl}
+                            alt={`Frame at ${item.timecode}`}
+                            className="w-full max-w-[420px] border border-[var(--border)] mb-2"
+                          />
+                        )}
+                        <div className="space-y-2">
+                          {item.risks.slice(0, 6).map((risk, j) => (
+                            <div key={j} className="border border-[var(--border)] bg-[var(--bg)] p-2">
+                              <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                <span className="text-[10px] uppercase" style={{ color: sevColor(risk.severity) }}>
+                                  {risk.severity}
+                                </span>
+                                <span className="text-[10px] text-[var(--text-dim)] uppercase border border-[var(--border)] px-1">
+                                  {risk.category.replaceAll("_", " ")}
+                                </span>
+                                <span className="text-[10px] text-[var(--text-dim)]">
+                                  {risk.policyName}
+                                </span>
+                              </div>
+                              <div className="text-xs text-[var(--text-dim)]">{risk.reasoning}</div>
+                              {risk.detectedText && (
+                                <div className="text-[10px] text-[var(--text-dim)] mt-1">
+                                  Ref: {risk.detectedText.slice(0, 140)}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         )}
 
         {activeTab === "legal" && (

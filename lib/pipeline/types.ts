@@ -13,6 +13,7 @@ export interface VideoFrameFinding {
   second: number;
   timecode: string;
   risks: VideoFrameRisk[];
+  thumbnailDataUrl?: string;
 }
 
 export interface CaseMetadata {
@@ -143,6 +144,7 @@ export interface SynthesisReport {
     status: "present" | "missing" | "partial";
     note?: string;
   }>;
+  videoTimeline?: VideoFrameFinding[];
   legalFlags: LegalFlag[];
   policyFlags: PolicyFlag[];
 }

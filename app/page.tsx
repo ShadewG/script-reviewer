@@ -179,6 +179,7 @@ export default function Home() {
       const times = initialTimes.filter((_, idx) => idx % stride === 0).slice(0, mode.maxFrames);
 
       const canvas = document.createElement("canvas");
+      const thumbCanvas = document.createElement("canvas");
       const findings: VideoFrameFinding[] = [];
 
       const seekTo = (sec: number) =>
@@ -213,6 +214,14 @@ export default function Home() {
 
         const dataUrl = canvas.toDataURL("image/jpeg", 0.72);
         const base64 = dataUrl.split(",")[1];
+        const thumbW = Math.min(320, targetW);
+        const thumbH = Math.max(1, Math.round((targetH / targetW) * thumbW));
+        thumbCanvas.width = thumbW;
+        thumbCanvas.height = thumbH;
+        const tctx = thumbCanvas.getContext("2d");
+        if (!tctx) throw new Error("Could not initialize thumbnail canvas");
+        tctx.drawImage(video, 0, 0, thumbW, thumbH);
+        const thumbnailDataUrl = thumbCanvas.toDataURL("image/jpeg", 0.58);
         const h = String(Math.floor(second / 3600)).padStart(2, "0");
         const m = String(Math.floor((second % 3600) / 60)).padStart(2, "0");
         const s = String(second % 60).padStart(2, "0");
@@ -236,6 +245,7 @@ export default function Home() {
             second: data.second,
             timecode: data.timecode,
             risks: data.risks,
+            thumbnailDataUrl,
           });
         }
       }
