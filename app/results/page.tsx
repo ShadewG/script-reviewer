@@ -286,15 +286,99 @@ function ResultsContent() {
       .catch(() => setLoading(false));
   }, [id]);
 
+  /* ── Derived data (stable references via useMemo) ── */
+  const report = data?.synthesis ?? null;
+  const allLegalFlags = useMemo(
+    () => report?.legalFlags ?? data?.legalFlags ?? [],
+    [report?.legalFlags, data?.legalFlags],
+  );
+  const allPolicyFlags = useMemo(
+    () => report?.policyFlags ?? data?.youtubeFlags ?? [],
+    [report?.policyFlags, data?.youtubeFlags],
+  );
+  const videoTimeline = useMemo(
+    () => buildVideoTimeline(report, allPolicyFlags),
+    [report, allPolicyFlags],
+  );
+  const riskyLines = useMemo(
+    () => data ? getRiskyLines(data.scriptText, allLegalFlags, allPolicyFlags) : [],
+    [data, allLegalFlags, allPolicyFlags],
+  );
+
+  /* ── Filtered + sorted (severe-first) data for tabs ── */
+  const filteredLegalFlags = useMemo(
+    () => allLegalFlags
+      .filter((f) => meetsMinSeverity(f.severity, minSeverity))
+      .sort((a, b) => compareSeverity(a.severity, b.severity)),
+    [allLegalFlags, minSeverity],
+  );
+  const filteredPolicyFlags = useMemo(
+    () => allPolicyFlags
+      .filter((f) => meetsMinSeverity(f.severity, minSeverity))
+      .sort((a, b) => compareSeverity(a.severity, b.severity)),
+    [allPolicyFlags, minSeverity],
+  );
+  const filteredVideoTimeline = useMemo(
+    () => videoTimeline.filter((v) => {
+      const maxSev = v.risks.reduce((worst, r) =>
+        (SEV_ORDER[r.severity] ?? 0) > (SEV_ORDER[worst] ?? 0) ? r.severity : worst, "low");
+      return meetsMinSeverity(maxSev, minSeverity);
+    }),
+    [videoTimeline, minSeverity],
+  );
+
+  /* Tab badge counts */
+  const tabCounts: Partial<Record<TabKey, number>> = useMemo(() => ({
+    video: filteredVideoTimeline.length,
+    legal: filteredLegalFlags.length,
+    youtube: filteredPolicyFlags.length,
+    script: allLegalFlags.length + allPolicyFlags.length,
+  }), [filteredVideoTimeline.length, filteredLegalFlags.length, filteredPolicyFlags.length, allLegalFlags.length, allPolicyFlags.length]);
+
+  /* Severity filter helpers */
+  const hiddenCount =
+    activeTab === "legal" ? allLegalFlags.length - filteredLegalFlags.length :
+    activeTab === "youtube" ? allPolicyFlags.length - filteredPolicyFlags.length :
+    activeTab === "video" ? videoTimeline.length - filteredVideoTimeline.length : 0;
+  const showSeverityFilter = activeTab === "legal" || activeTab === "youtube" || activeTab === "video";
+
+  /* Video expand/collapse helpers — clear when filter changes */
+  useEffect(() => {
+    setExpandedVideoSet(new Set());
+  }, [minSeverity]);
+
+  const toggleVideoExpand = useCallback((idx: number) => {
+    setExpandedVideoSet((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
+  }, []);
+  const expandAllVideo = useCallback(() => {
+    setExpandedVideoSet(new Set(filteredVideoTimeline.map((_, i) => i)));
+  }, [filteredVideoTimeline]);
+  const collapseAllVideo = useCallback(() => {
+    setExpandedVideoSet(new Set());
+  }, []);
+
+  /* YouTube policy reference */
+  const triggeredPolicyNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const f of allPolicyFlags) if (f.policyName) names.add(f.policyName);
+    return names;
+  }, [allPolicyFlags]);
+
+  /* Risk score bar color */
+  const riskBarColor = (score: number) => {
+    if (score <= 30) return "var(--green)";
+    if (score <= 60) return "var(--yellow)";
+    if (score <= 80) return "var(--amber)";
+    return "var(--red)";
+  };
+
   if (!id) return <div className="p-8 text-[var(--text-dim)]">No review ID</div>;
   if (loading) return <LoadingSkeleton />;
   if (!data) return <div className="p-8 text-[var(--red)]">Review not found</div>;
-
-  const report = data.synthesis;
-  const allLegalFlags = report?.legalFlags ?? data.legalFlags ?? [];
-  const allPolicyFlags = report?.policyFlags ?? data.youtubeFlags ?? [];
-  const videoTimeline = buildVideoTimeline(report, allPolicyFlags);
-  const riskyLines = getRiskyLines(data.scriptText, allLegalFlags, allPolicyFlags);
 
   return (
     <div className="min-h-screen p-4 max-w-6xl mx-auto">
@@ -346,11 +430,11 @@ function ResultsContent() {
         </div>
       </header>
 
-      {/* Verdict Banner */}
+      {/* Verdict Banner — sticky */}
       {report && (
         <div
-          className="border p-4 mb-6"
-          style={{ borderColor: verdictColor(report.verdict) }}
+          className="border p-4 mb-6 sticky top-0 z-10 bg-[var(--bg)]"
+          style={{ borderColor: verdictColor(report.verdict), boxShadow: "0 2px 8px rgba(0,0,0,0.25)" }}
         >
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -370,6 +454,16 @@ function ResultsContent() {
                 {report.riskScore}
               </div>
               <div className="text-[10px] text-[var(--text-dim)] uppercase">Risk Score</div>
+              {/* Risk score bar */}
+              <div className="w-24 h-1.5 bg-[var(--bg-surface)] mt-1 ml-auto">
+                <div
+                  className="h-full transition-all"
+                  style={{
+                    width: `${Math.min(100, Math.max(0, report.riskScore))}%`,
+                    background: riskBarColor(report.riskScore),
+                  }}
+                />
+              </div>
             </div>
           </div>
           <p className="text-sm mt-3 text-[var(--text)] leading-relaxed">{report.summary}</p>
@@ -396,21 +490,55 @@ function ResultsContent() {
       )}
 
       {/* Tabs */}
-      <div className="flex gap-0 border-b border-[var(--border)] mb-4">
-        {(["overview", "video", "script", "legal", "youtube", "research", "raw"] as const).map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2 text-xs uppercase tracking-wider border-b-2 transition-colors ${
-              activeTab === tab
-                ? "border-[var(--text-bright)] text-[var(--text-bright)]"
-                : "border-transparent text-[var(--text-dim)] hover:text-[var(--text)]"
-            }`}
-          >
-            {tab}
-          </button>
-        ))}
+      <div className="flex gap-0 border-b border-[var(--border)] mb-0">
+        {(["overview", "video", "script", "legal", "youtube", "research", "raw"] as const).map((tab) => {
+          const count = tabCounts[tab];
+          return (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`px-4 py-2 text-xs uppercase tracking-wider border-b-2 transition-colors flex items-center gap-1.5 ${
+                activeTab === tab
+                  ? "border-[var(--text-bright)] text-[var(--text-bright)]"
+                  : "border-transparent text-[var(--text-dim)] hover:text-[var(--text)]"
+              }`}
+            >
+              {tab}
+              {count != null && count > 0 && (
+                <span className="text-[9px] min-w-[16px] text-center px-1 py-0.5 leading-none bg-[var(--bg-surface)] border border-[var(--border)] rounded-sm">
+                  {count}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
+
+      {/* Severity filter bar */}
+      {showSeverityFilter && (
+        <div className="flex items-center gap-2 py-2 px-1 border-b border-[var(--border)] mb-4">
+          <span className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mr-1">Min severity:</span>
+          {(["low", "medium", "high", "severe"] as Severity[]).map((sev) => (
+            <button
+              key={sev}
+              onClick={() => setMinSeverity(sev)}
+              className={`text-[10px] uppercase tracking-wider px-2 py-1 border transition-colors ${
+                minSeverity === sev
+                  ? "border-[var(--text-bright)] text-[var(--text-bright)] bg-[var(--bg-elevated)]"
+                  : "border-[var(--border)] text-[var(--text-dim)] hover:text-[var(--text)]"
+              }`}
+            >
+              {sev}
+            </button>
+          ))}
+          {hiddenCount > 0 && (
+            <span className="text-[10px] text-[var(--text-dim)] ml-2">
+              ({hiddenCount} hidden)
+            </span>
+          )}
+        </div>
+      )}
+      {!showSeverityFilter && <div className="mb-4" />}
 
       {/* Tab Content */}
       <div className="min-h-[400px]">
@@ -564,29 +692,67 @@ function ResultsContent() {
         )}
 
         {activeTab === "script" && data.scriptText && (
-          <AnnotatedScriptView
-            scriptText={data.scriptText}
-            legalFlags={allLegalFlags}
-            policyFlags={allPolicyFlags}
-            state={data.caseState}
-            caseStatus={data.caseStatus}
-            hasMinors={data.hasMinors}
-          />
+          <div>
+            {/* Flag type filter */}
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mr-1">Show:</span>
+              {(["all", "legal", "policy"] as const).map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setFlagFilter(f)}
+                  className={`text-[10px] uppercase tracking-wider px-2 py-1 border transition-colors ${
+                    flagFilter === f
+                      ? "border-[var(--text-bright)] text-[var(--text-bright)] bg-[var(--bg-elevated)]"
+                      : "border-[var(--border)] text-[var(--text-dim)] hover:text-[var(--text)]"
+                  }`}
+                >
+                  {f === "all" ? "All Flags" : f === "legal" ? "Legal Only" : "Policy Only"}
+                </button>
+              ))}
+            </div>
+            <AnnotatedScriptView
+              scriptText={data.scriptText}
+              legalFlags={allLegalFlags}
+              policyFlags={allPolicyFlags}
+              state={data.caseState}
+              caseStatus={data.caseStatus}
+              hasMinors={data.hasMinors}
+              flagFilter={flagFilter}
+            />
+          </div>
         )}
 
         {activeTab === "video" && (
           <div>
-            {videoTimeline.length === 0 ? (
-              <p className="text-sm text-[var(--text-dim)]">No video timeline findings for this report.</p>
+            {filteredVideoTimeline.length === 0 ? (
+              <p className="text-sm text-[var(--text-dim)]">
+                {videoTimeline.length === 0
+                  ? "No video timeline findings for this report."
+                  : "All video findings hidden by severity filter."}
+              </p>
             ) : (
               <>
                 <div className="flex items-center gap-3 mb-4">
                   <span className="text-sm text-[var(--text-bright)]">
-                    {videoTimeline.length} flagged moment{videoTimeline.length === 1 ? "" : "s"}
+                    {filteredVideoTimeline.length} flagged moment{filteredVideoTimeline.length === 1 ? "" : "s"}
                   </span>
                   <span className="text-xs text-[var(--text-dim)]">
-                    {videoTimeline.reduce((sum, v) => sum + v.risks.length, 0)} total risks
+                    {filteredVideoTimeline.reduce((sum, v) => sum + v.risks.length, 0)} total risks
                   </span>
+                  <div className="ml-auto flex gap-2">
+                    <button
+                      onClick={expandAllVideo}
+                      className="text-[10px] uppercase tracking-wider px-2 py-1 border border-[var(--border)] hover:bg-[var(--bg-elevated)] text-[var(--text-dim)]"
+                    >
+                      Expand All
+                    </button>
+                    <button
+                      onClick={collapseAllVideo}
+                      className="text-[10px] uppercase tracking-wider px-2 py-1 border border-[var(--border)] hover:bg-[var(--bg-elevated)] text-[var(--text-dim)]"
+                    >
+                      Collapse All
+                    </button>
+                  </div>
                 </div>
 
                 <div className="border border-[var(--border)] bg-[var(--bg-surface)] overflow-hidden">
@@ -599,25 +765,17 @@ function ResultsContent() {
                   </div>
 
                   {/* Table rows */}
-                  {videoTimeline.map((item, i) => {
-                    const maxSev = item.risks.reduce((worst, r) => {
-                      const order: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
-                      return (order[r.severity] ?? 0) > (order[worst] ?? 0) ? r.severity : worst;
-                    }, "low");
+                  {filteredVideoTimeline.map((item, i) => {
+                    const maxSev = item.risks.reduce((worst, r) =>
+                      (SEV_ORDER[r.severity] ?? 0) > (SEV_ORDER[worst] ?? 0) ? r.severity : worst,
+                    "low");
                     const isExpanded = expandedVideoSet.has(i);
                     const categories = [...new Set(item.risks.map(r => r.category.replaceAll("_", " ")))];
 
                     return (
                       <div key={`${item.timecode}-${i}`}>
                         <div
-                          onClick={() =>
-                            setExpandedVideoSet((prev) => {
-                              const next = new Set(prev);
-                              if (next.has(i)) next.delete(i);
-                              else next.add(i);
-                              return next;
-                            })
-                          }
+                          onClick={() => toggleVideoExpand(i)}
                           className={`grid grid-cols-[90px_80px_1fr_60px] gap-3 px-4 py-3 cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors ${
                             isExpanded ? "bg-[var(--bg-elevated)]" : ""
                           } ${i > 0 ? "border-t border-[var(--border)]" : ""}`}
@@ -701,10 +859,12 @@ function ResultsContent() {
               </div>
             )}
 
-            {allLegalFlags.length === 0 ? (
-              <p className="text-xs text-[var(--text-dim)]">No legal flags identified.</p>
+            {filteredLegalFlags.length === 0 ? (
+              <p className="text-xs text-[var(--text-dim)]">
+                {allLegalFlags.length === 0 ? "No legal flags identified." : "All legal flags hidden by severity filter."}
+              </p>
             ) : (
-              allLegalFlags.map((flag: LegalFlag, i: number) => {
+              filteredLegalFlags.map((flag: LegalFlag, i: number) => {
                 const isCrossValidated = "agreementCount" in flag;
                 const cv = isCrossValidated ? (flag as unknown as {
                   agreementCount: number;
@@ -777,10 +937,37 @@ function ResultsContent() {
 
         {activeTab === "youtube" && (
           <div className="space-y-2">
-            {allPolicyFlags.length === 0 ? (
+            {/* Policies Triggered strip */}
+            <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 mb-3">
+              <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-2">
+                Policies Triggered ({triggeredPolicyNames.size}/{YT_POLICIES.length})
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {YT_POLICIES.map((p) => {
+                  const triggered = triggeredPolicyNames.has(p.name);
+                  return (
+                    <span
+                      key={p.id}
+                      className={`text-[9px] px-1.5 py-0.5 border ${
+                        triggered
+                          ? "border-[var(--red)] text-[var(--red)] bg-[rgba(239,68,68,0.1)]"
+                          : "border-[var(--border)] text-[var(--text-dim)] opacity-40"
+                      }`}
+                      title={p.name}
+                    >
+                      {p.name.length > 28 ? p.name.slice(0, 26) + "..." : p.name}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+
+            {filteredPolicyFlags.length === 0 ? (
               <div className="space-y-2">
-                <p className="text-xs text-[var(--text-dim)]">No YouTube policy flags identified.</p>
-                {report?.riskDashboard?.monetization !== "full_ads" && (
+                <p className="text-xs text-[var(--text-dim)]">
+                  {allPolicyFlags.length === 0 ? "No YouTube policy flags identified." : "All policy flags hidden by severity filter."}
+                </p>
+                {allPolicyFlags.length === 0 && report?.riskDashboard?.monetization !== "full_ads" && (
                   <p className="text-xs text-[var(--yellow)]">
                     Monetization was marked {report?.riskDashboard?.monetization.replaceAll("_", " ")} in synthesis,
                     but no specific policy flags were returned for this review.
@@ -788,7 +975,7 @@ function ResultsContent() {
                 )}
               </div>
             ) : (
-              allPolicyFlags.map((flag: PolicyFlag, i: number) => (
+              filteredPolicyFlags.map((flag: PolicyFlag, i: number) => (
                 <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
                   <div className="flex items-center gap-2 mb-2 flex-wrap">
                     <span className="w-2 h-2" style={{ background: sevColor(flag.severity) }} />
@@ -855,7 +1042,7 @@ function ResultsContent() {
 
 export default function ResultsPage() {
   return (
-    <Suspense fallback={<div className="p-8 text-[var(--text-dim)]">LOADING...</div>}>
+    <Suspense fallback={<LoadingSkeleton />}>
       <ResultsContent />
     </Suspense>
   );

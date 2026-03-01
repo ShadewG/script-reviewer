@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import type { LegalFlag, PolicyFlag } from "@/lib/pipeline/types";
 
 interface LineEditFormProps {
@@ -130,6 +130,7 @@ interface Props {
   state: string;
   caseStatus: string;
   hasMinors: boolean;
+  flagFilter?: "all" | "legal" | "policy";
 }
 
 export default function AnnotatedScriptView({
@@ -139,170 +140,339 @@ export default function AnnotatedScriptView({
   state,
   caseStatus,
   hasMinors,
+  flagFilter = "all",
 }: Props) {
   const lines = scriptText.split("\n");
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
   const [editingLine, setEditingLine] = useState<number | null>(null);
+  const [currentFlagIndex, setCurrentFlagIndex] = useState(0);
   const selectedRef = useRef<HTMLDivElement>(null);
+  const scriptContainerRef = useRef<HTMLDivElement>(null);
+  const [scrollRatio, setScrollRatio] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0.1);
 
-  // Build line -> flags map
-  const lineFlags = new Map<number, FlagDetail[]>();
-  for (const flag of legalFlags) {
-    if (flag.line) {
-      const existing = lineFlags.get(flag.line) ?? [];
-      existing.push({ type: "legal", flag });
-      lineFlags.set(flag.line, existing);
+  // Build visible line -> flags map (respects flagFilter)
+  const visibleLineFlags = useMemo(() => {
+    const map = new Map<number, FlagDetail[]>();
+    if (flagFilter !== "policy") {
+      for (const flag of legalFlags) {
+        if (flag.line) {
+          const existing = map.get(flag.line) ?? [];
+          existing.push({ type: "legal", flag });
+          map.set(flag.line, existing);
+        }
+      }
     }
-  }
-  for (const flag of policyFlags) {
-    if (flag.line) {
-      const existing = lineFlags.get(flag.line) ?? [];
-      existing.push({ type: "policy", flag });
-      lineFlags.set(flag.line, existing);
+    if (flagFilter !== "legal") {
+      for (const flag of policyFlags) {
+        if (flag.line) {
+          const existing = map.get(flag.line) ?? [];
+          existing.push({ type: "policy", flag });
+          map.set(flag.line, existing);
+        }
+      }
     }
-  }
+    return map;
+  }, [legalFlags, policyFlags, flagFilter]);
 
+  // Sorted flagged line numbers for navigation
+  const flaggedLineNumbers = useMemo(
+    () => [...visibleLineFlags.keys()].sort((a, b) => a - b),
+    [visibleLineFlags],
+  );
+
+  // Sync currentFlagIndex when clicking lines
   useEffect(() => {
-    if (selectedLine && selectedRef.current) {
+    if (selectedLine !== null) {
+      const idx = flaggedLineNumbers.indexOf(selectedLine);
+      if (idx >= 0) setCurrentFlagIndex(idx);
+    }
+  }, [selectedLine, flaggedLineNumbers]);
+
+  // Scroll to selected line
+  useEffect(() => {
+    if (selectedLine !== null && selectedRef.current) {
       selectedRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, [selectedLine]);
 
+  // Track scroll position for minimap viewport indicator
+  useEffect(() => {
+    const el = scriptContainerRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = el;
+      setScrollRatio(scrollHeight > clientHeight ? scrollTop / (scrollHeight - clientHeight) : 0);
+      setViewportHeight(Math.min(1, clientHeight / Math.max(1, scrollHeight)));
+    };
+    onScroll(); // compute initial value
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // Navigation helpers
+  const navigateToFlag = useCallback((index: number) => {
+    if (index < 0 || index >= flaggedLineNumbers.length) return;
+    setCurrentFlagIndex(index);
+    setSelectedLine(flaggedLineNumbers[index]);
+  }, [flaggedLineNumbers]);
+
+  const goNext = useCallback(() => {
+    navigateToFlag(Math.min(currentFlagIndex + 1, flaggedLineNumbers.length - 1));
+  }, [currentFlagIndex, flaggedLineNumbers.length, navigateToFlag]);
+
+  const goPrev = useCallback(() => {
+    navigateToFlag(Math.max(currentFlagIndex - 1, 0));
+  }, [currentFlagIndex, navigateToFlag]);
+
+  // Keyboard shortcuts (script tab only)
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      // Don't capture when typing in inputs
+      if (target.tagName === "TEXTAREA" || target.tagName === "INPUT") return;
+
+      if (e.key === "j" || e.key === "ArrowDown") {
+        e.preventDefault();
+        goNext();
+      } else if (e.key === "k" || e.key === "ArrowUp") {
+        e.preventDefault();
+        goPrev();
+      } else if (e.key === "e" && selectedLine !== null) {
+        e.preventDefault();
+        setEditingLine(selectedLine);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        setEditingLine(null);
+        setSelectedLine(null);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [goNext, goPrev, selectedLine]);
+
+  // Minimap tick color
+  const tickColor = (lineNum: number) => {
+    const flags = visibleLineFlags.get(lineNum);
+    if (!flags) return "transparent";
+    const hasLegal = flags.some((f) => f.type === "legal");
+    const hasPolicy = flags.some((f) => f.type === "policy");
+    if (hasLegal && hasPolicy) return "var(--red)";
+    if (hasLegal) return "var(--red)";
+    return "var(--yellow)";
+  };
+
   return (
     <div className="flex gap-4">
       {/* Script Column */}
-      <div className="flex-1 overflow-auto max-h-[700px] border border-[var(--border)] bg-[var(--bg-surface)]" style={{ fontFamily: '"Courier New", Courier, monospace' }}>
-        {lines.map((line, i) => {
-          const lineNum = i + 1;
-          const flags = lineFlags.get(lineNum);
-          const hasLegal = flags?.some((f) => f.type === "legal");
-          const hasPolicy = flags?.some((f) => f.type === "policy");
-          const isSelected = selectedLine === lineNum;
+      <div className="flex-1 flex">
+        <div
+          ref={scriptContainerRef}
+          className="flex-1 overflow-auto max-h-[700px] border border-[var(--border)] bg-[var(--bg-surface)]"
+          style={{ fontFamily: '"Courier New", Courier, monospace' }}
+        >
+          {lines.map((line, i) => {
+            const lineNum = i + 1;
+            const flags = visibleLineFlags.get(lineNum);
+            const hasLegal = flags?.some((f) => f.type === "legal");
+            const hasPolicy = flags?.some((f) => f.type === "policy");
+            const isSelected = selectedLine === lineNum;
 
-          let bgColor = "transparent";
-          if (hasLegal && hasPolicy) bgColor = "rgba(239, 68, 68, 0.2)";
-          else if (hasLegal) bgColor = "rgba(239, 68, 68, 0.12)";
-          else if (hasPolicy) bgColor = "rgba(234, 179, 8, 0.12)";
+            let bgColor = "transparent";
+            if (hasLegal && hasPolicy) bgColor = "rgba(239, 68, 68, 0.2)";
+            else if (hasLegal) bgColor = "rgba(239, 68, 68, 0.12)";
+            else if (hasPolicy) bgColor = "rgba(234, 179, 8, 0.12)";
 
-          return (
-            <div key={lineNum}>
-              <div
-                ref={isSelected ? selectedRef : undefined}
-                onClick={() => flags && setSelectedLine(isSelected ? null : lineNum)}
-                className={`flex text-[13px] leading-7 ${flags ? "cursor-pointer hover:brightness-110" : ""} ${
-                  isSelected ? "ring-1 ring-[var(--text-dim)]" : ""
-                }`}
-                style={{ background: bgColor }}
-              >
-                {/* Line number gutter */}
-                <div className="w-10 flex-shrink-0 text-right pr-2 text-[var(--text-dim)] select-none border-r border-[var(--border)] relative">
-                  {lineNum}
-                  {flags && (
-                    <div className="absolute right-[-3px] top-[9px] flex flex-col gap-0.5">
-                      {hasLegal && <div className="w-1.5 h-1.5 bg-[var(--red)]" />}
-                      {hasPolicy && <div className="w-1.5 h-1.5 bg-[var(--yellow)]" />}
-                    </div>
-                  )}
+            return (
+              <div key={lineNum}>
+                <div
+                  ref={isSelected ? selectedRef : undefined}
+                  onClick={() => flags && setSelectedLine(isSelected ? null : lineNum)}
+                  className={`flex text-[13px] leading-7 ${flags ? "cursor-pointer hover:brightness-110" : ""} ${
+                    isSelected ? "ring-1 ring-[var(--text-dim)]" : ""
+                  }`}
+                  style={{ background: bgColor }}
+                >
+                  {/* Line number gutter */}
+                  <div className="w-10 flex-shrink-0 text-right pr-2 text-[var(--text-dim)] select-none border-r border-[var(--border)] relative">
+                    {lineNum}
+                    {flags && (
+                      <div className="absolute right-[-3px] top-[9px] flex flex-col gap-0.5">
+                        {hasLegal && <div className="w-1.5 h-1.5 bg-[var(--red)]" />}
+                        {hasPolicy && <div className="w-1.5 h-1.5 bg-[var(--yellow)]" />}
+                      </div>
+                    )}
+                  </div>
+                  {/* Line content */}
+                  <div className="pl-3 pr-2 whitespace-pre-wrap break-all flex-1">
+                    {line || "\u00A0"}
+                  </div>
                 </div>
-                {/* Line content */}
-                <div className="pl-3 pr-2 whitespace-pre-wrap break-all flex-1">
-                  {line || "\u00A0"}
-                </div>
+
+                {/* Inline flag details */}
+                {isSelected && flags && (
+                  <div className="border-l-2 border-[var(--text-dim)] ml-10 pl-4 py-3 bg-[var(--bg-elevated)]" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }}>
+                    {flags.map((fd, fi) => {
+                      const f = fd.flag;
+                      if (fd.type === "legal") {
+                        const lf = f as LegalFlag;
+                        return (
+                          <div key={fi} className="mb-3 last:mb-0">
+                            <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+                              <span className="w-1.5 h-1.5 bg-[var(--red)]" />
+                              <span className="text-xs uppercase text-[var(--red)] font-medium">
+                                {lf.severity} — {lf.riskType.replaceAll("_", " ")}
+                              </span>
+                              <span className="text-xs text-[var(--text-dim)]">
+                                — {lf.person}
+                              </span>
+                              {lf.counselReview && (
+                                <span className="text-xs text-[var(--red)] border border-[var(--red)] px-1">
+                                  COUNSEL
+                                </span>
+                              )}
+                              {"agreementCount" in lf && (
+                                <span className="text-xs text-[var(--text-dim)] border border-[var(--border)] px-1">
+                                  {(lf as unknown as { agreementCount: number }).agreementCount}/2
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-[var(--text-dim)] leading-relaxed">{lf.reasoning}</p>
+                            {lf.stateCitation && (
+                              <p className="text-xs text-[var(--text-dim)] mt-1">Cite: {lf.stateCitation}</p>
+                            )}
+                            <p className="text-xs text-[var(--green)] mt-1">Safer: {lf.saferRewrite}</p>
+                          </div>
+                        );
+                      } else {
+                        const pf = f as PolicyFlag;
+                        return (
+                          <div key={fi} className="mb-3 last:mb-0">
+                            <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+                              <span className="w-1.5 h-1.5 bg-[var(--yellow)]" />
+                              <span className="text-xs uppercase text-[var(--yellow)] font-medium">
+                                {pf.severity} — {pf.category.replaceAll("_", " ")}
+                              </span>
+                              <span
+                                className="text-xs uppercase px-1 border"
+                                style={{ color: pf.impact === "full_ads" ? "var(--green)" : pf.impact === "limited_ads" ? "var(--yellow)" : "var(--red)", borderColor: pf.impact === "full_ads" ? "var(--green)" : pf.impact === "limited_ads" ? "var(--yellow)" : "var(--red)" }}
+                              >
+                                {pf.impact.replaceAll("_", " ")}
+                              </span>
+                            </div>
+                            <p className="text-xs text-[var(--text-dim)] leading-relaxed">{pf.reasoning}</p>
+                            {pf.policyQuote && (
+                              <p className="text-xs text-[var(--text-dim)] italic mt-1">Policy: {pf.policyQuote}</p>
+                            )}
+                            {pf.saferRewrite && (
+                              <p className="text-xs text-[var(--green)] mt-1">Safer: {pf.saferRewrite}</p>
+                            )}
+                          </div>
+                        );
+                      }
+                    })}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setEditingLine(lineNum); }}
+                      className="text-[10px] uppercase tracking-wider mt-1 px-2 py-0.5 border border-[var(--border)] hover:bg-[var(--bg-surface)] text-[var(--text-dim)]"
+                    >
+                      Suggest Edit
+                    </button>
+                  </div>
+                )}
+
+                {/* Inline edit form */}
+                {editingLine === lineNum && (
+                  <div className="ml-10">
+                    <LineEditForm
+                      lineNumber={lineNum}
+                      originalText={line}
+                      scriptText={scriptText}
+                      state={state}
+                      caseStatus={caseStatus}
+                      hasMinors={hasMinors}
+                      onClose={() => setEditingLine(null)}
+                    />
+                  </div>
+                )}
               </div>
+            );
+          })}
+        </div>
 
-              {/* Inline flag details */}
-              {isSelected && flags && (
-                <div className="border-l-2 border-[var(--text-dim)] ml-10 pl-4 py-3 bg-[var(--bg-elevated)]" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }}>
-                  {flags.map((fd, fi) => {
-                    const f = fd.flag;
-                    if (fd.type === "legal") {
-                      const lf = f as LegalFlag;
-                      return (
-                        <div key={fi} className="mb-3 last:mb-0">
-                          <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
-                            <span className="w-1.5 h-1.5 bg-[var(--red)]" />
-                            <span className="text-xs uppercase text-[var(--red)] font-medium">
-                              {lf.severity} — {lf.riskType.replaceAll("_", " ")}
-                            </span>
-                            <span className="text-xs text-[var(--text-dim)]">
-                              — {lf.person}
-                            </span>
-                            {lf.counselReview && (
-                              <span className="text-xs text-[var(--red)] border border-[var(--red)] px-1">
-                                COUNSEL
-                              </span>
-                            )}
-                            {"agreementCount" in lf && (
-                              <span className="text-xs text-[var(--text-dim)] border border-[var(--border)] px-1">
-                                {(lf as unknown as { agreementCount: number }).agreementCount}/2
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-xs text-[var(--text-dim)] leading-relaxed">{lf.reasoning}</p>
-                          {lf.stateCitation && (
-                            <p className="text-xs text-[var(--text-dim)] mt-1">Cite: {lf.stateCitation}</p>
-                          )}
-                          <p className="text-xs text-[var(--green)] mt-1">Safer: {lf.saferRewrite}</p>
-                        </div>
-                      );
-                    } else {
-                      const pf = f as PolicyFlag;
-                      return (
-                        <div key={fi} className="mb-3 last:mb-0">
-                          <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
-                            <span className="w-1.5 h-1.5 bg-[var(--yellow)]" />
-                            <span className="text-xs uppercase text-[var(--yellow)] font-medium">
-                              {pf.severity} — {pf.category.replaceAll("_", " ")}
-                            </span>
-                            <span
-                              className="text-xs uppercase px-1 border"
-                              style={{ color: pf.impact === "full_ads" ? "var(--green)" : pf.impact === "limited_ads" ? "var(--yellow)" : "var(--red)", borderColor: pf.impact === "full_ads" ? "var(--green)" : pf.impact === "limited_ads" ? "var(--yellow)" : "var(--red)" }}
-                            >
-                              {pf.impact.replaceAll("_", " ")}
-                            </span>
-                          </div>
-                          <p className="text-xs text-[var(--text-dim)] leading-relaxed">{pf.reasoning}</p>
-                          {pf.policyQuote && (
-                            <p className="text-xs text-[var(--text-dim)] italic mt-1">Policy: {pf.policyQuote}</p>
-                          )}
-                          {pf.saferRewrite && (
-                            <p className="text-xs text-[var(--green)] mt-1">Safer: {pf.saferRewrite}</p>
-                          )}
-                        </div>
-                      );
-                    }
-                  })}
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setEditingLine(lineNum); }}
-                    className="text-[10px] uppercase tracking-wider mt-1 px-2 py-0.5 border border-[var(--border)] hover:bg-[var(--bg-surface)] text-[var(--text-dim)]"
-                  >
-                    Suggest Edit
-                  </button>
-                </div>
-              )}
-
-              {/* Inline edit form */}
-              {editingLine === lineNum && (
-                <div className="ml-10">
-                  <LineEditForm
-                    lineNumber={lineNum}
-                    originalText={line}
-                    scriptText={scriptText}
-                    state={state}
-                    caseStatus={caseStatus}
-                    hasMinors={hasMinors}
-                    onClose={() => setEditingLine(null)}
-                  />
-                </div>
-              )}
-            </div>
-          );
-        })}
+        {/* Minimap */}
+        <div
+          className="w-3 flex-shrink-0 bg-[var(--bg-surface)] border-y border-r border-[var(--border)] relative cursor-pointer"
+          style={{ height: "700px", maxHeight: "700px" }}
+          onClick={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const ratio = (e.clientY - rect.top) / rect.height;
+            const targetLine = Math.round(ratio * lines.length) + 1;
+            // Find nearest flagged line
+            let nearest = flaggedLineNumbers[0];
+            let minDist = Infinity;
+            for (const ln of flaggedLineNumbers) {
+              const dist = Math.abs(ln - targetLine);
+              if (dist < minDist) { minDist = dist; nearest = ln; }
+            }
+            if (nearest) {
+              const idx = flaggedLineNumbers.indexOf(nearest);
+              setCurrentFlagIndex(idx);
+              setSelectedLine(nearest);
+            }
+          }}
+        >
+          {/* Flag ticks */}
+          {flaggedLineNumbers.map((ln) => (
+            <div
+              key={ln}
+              className="absolute left-0 w-full h-[3px]"
+              style={{
+                top: `${((ln - 1) / Math.max(1, lines.length - 1)) * 100}%`,
+                background: tickColor(ln),
+              }}
+            />
+          ))}
+          {/* Viewport indicator */}
+          <div
+            className="absolute left-0 w-full border border-[var(--text-dim)] opacity-30"
+            style={{
+              top: `${scrollRatio * (1 - viewportHeight) * 100}%`,
+              height: `${viewportHeight * 100}%`,
+              background: "var(--text-dim)",
+            }}
+          />
+        </div>
       </div>
 
-      {/* Legend */}
+      {/* Legend + Navigation */}
       <div className="w-48 flex-shrink-0">
         <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 sticky top-4">
+          {/* Flag navigation */}
+          {flaggedLineNumbers.length > 0 && (
+            <div className="mb-3 pb-3 border-b border-[var(--border)]">
+              <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-2">Navigate Flags</div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={goPrev}
+                  disabled={currentFlagIndex <= 0}
+                  className="text-[10px] px-2 py-1 border border-[var(--border)] hover:bg-[var(--bg-elevated)] disabled:opacity-30"
+                >
+                  Prev
+                </button>
+                <span className="text-[10px] text-[var(--text-bright)] tabular-nums">
+                  {flaggedLineNumbers.length > 0 ? currentFlagIndex + 1 : 0}/{flaggedLineNumbers.length}
+                </span>
+                <button
+                  onClick={goNext}
+                  disabled={currentFlagIndex >= flaggedLineNumbers.length - 1}
+                  className="text-[10px] px-2 py-1 border border-[var(--border)] hover:bg-[var(--bg-elevated)] disabled:opacity-30"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-3">Legend</div>
           <div className="space-y-2 text-[10px]">
             <div className="flex items-center gap-2">
@@ -320,22 +490,33 @@ export default function AnnotatedScriptView({
           </div>
           <div className="border-t border-[var(--border)] mt-3 pt-3 text-[10px] text-[var(--text-dim)]">
             <p className="mb-1">Click a highlighted line to see flag details.</p>
-            <p>Use "Suggest Edit" to test changes against the AI.</p>
+            <p>Use &quot;Suggest Edit&quot; to test changes against the AI.</p>
           </div>
+
+          {/* Keyboard shortcuts */}
+          <div className="border-t border-[var(--border)] mt-3 pt-3">
+            <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-2">Shortcuts</div>
+            <div className="text-[10px] text-[var(--text-dim)] space-y-1">
+              <div><kbd className="px-1 border border-[var(--border)] text-[9px]">j</kbd> / <kbd className="px-1 border border-[var(--border)] text-[9px]">k</kbd> — next / prev flag</div>
+              <div><kbd className="px-1 border border-[var(--border)] text-[9px]">e</kbd> — edit selected line</div>
+              <div><kbd className="px-1 border border-[var(--border)] text-[9px]">Esc</kbd> — close / deselect</div>
+            </div>
+          </div>
+
           <div className="border-t border-[var(--border)] mt-3 pt-3">
             <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-2">Stats</div>
             <div className="text-[10px] space-y-1">
               <div className="flex justify-between">
                 <span className="text-[var(--red)]">Legal flags</span>
-                <span>{legalFlags.length}</span>
+                <span>{legalFlags.filter((f) => f.line).length}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-[var(--yellow)]">Policy flags</span>
-                <span>{policyFlags.length}</span>
+                <span>{policyFlags.filter((f) => f.line).length}</span>
               </div>
               <div className="flex justify-between">
                 <span>Flagged lines</span>
-                <span>{lineFlags.size}</span>
+                <span>{visibleLineFlags.size}</span>
               </div>
               <div className="flex justify-between">
                 <span>Total lines</span>
