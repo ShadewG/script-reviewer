@@ -29,6 +29,12 @@ import type {
 } from "./types";
 import type { DocumentFacts } from "../documents/types";
 
+const SYNTHESIS_REPAIR_SYSTEM = `You repair malformed JSON.
+Return ONLY valid JSON. No markdown, no commentary.
+Preserve the original meaning and keys as much as possible.
+Do not invent new top-level fields.
+Ensure all strings are properly quoted and escaped.`;
+
 function deriveMonetizationFromPolicyFlags(
   policyFlags: PolicyFlag[]
 ): "full_ads" | "limited_ads" | "no_ads" {
@@ -348,7 +354,20 @@ export async function runPipeline(
       SYNTHESIS_SYSTEM,
       buildSynthesisPrompt(script, parsed, legalFlags, policyFlags, research, metadata)
     );
-    report = safeJsonParse<SynthesisReport>(synthResult);
+    try {
+      report = safeJsonParse<SynthesisReport>(synthResult);
+    } catch (parseErr) {
+      // Second chance: repair malformed JSON via lightweight model before failing stage.
+      const repaired = await callGPTMini(
+        SYNTHESIS_REPAIR_SYSTEM,
+        `Repair this malformed JSON so it parses strictly:\n\n${synthResult}`
+      );
+      try {
+        report = safeJsonParse<SynthesisReport>(repaired);
+      } catch {
+        throw parseErr;
+      }
+    }
     // Inject the actual flags (prompt told Claude to return empty arrays to save tokens)
     report.legalFlags = legalFlags;
     report.policyFlags = policyFlags;
