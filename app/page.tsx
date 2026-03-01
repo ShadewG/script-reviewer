@@ -28,6 +28,8 @@ const FOOTAGE_TYPES = [
   "Bodycam", "911 Calls", "Court Footage", "Interrogation",
   "Surveillance", "News Clips", "Photos", "Reenactment",
 ];
+const VIDEO_BASE_INTERVAL_SECONDS = 10;
+const VIDEO_MAX_FRAMES = 40;
 
 type AnalysisMode = "full" | "legal_only" | "monetization_only";
 
@@ -62,6 +64,7 @@ export default function Home() {
   const [videoFindings, setVideoFindings] = useState<VideoFrameFinding[]>([]);
   const [videoUploading, setVideoUploading] = useState(false);
   const [videoError, setVideoError] = useState<string | null>(null);
+  const [videoProgress, setVideoProgress] = useState<string>("");
   const [videoMeta, setVideoMeta] = useState<{ sampledFrames: number; intervalSeconds: number } | null>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
@@ -140,29 +143,107 @@ export default function Home() {
   const handleVideoUpload = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     const file = files[0];
+    let objectUrl: string | null = null;
     setVideoUploading(true);
     setVideoError(null);
+    setVideoProgress("Loading video metadata...");
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await fetch("/api/upload-video", {
-        method: "POST",
-        body: formData,
+      objectUrl = URL.createObjectURL(file);
+      const video = document.createElement("video");
+      video.preload = "metadata";
+      video.muted = true;
+      video.src = objectUrl;
+      await new Promise<void>((resolve, reject) => {
+        video.onloadedmetadata = () => resolve();
+        video.onerror = () => reject(new Error("Could not read video metadata"));
       });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Video upload failed");
+
+      const duration = Number.isFinite(video.duration) ? Math.max(1, Math.floor(video.duration)) : 0;
+      if (duration <= 0) throw new Error("Invalid video duration");
+
+      const step = Math.max(
+        VIDEO_BASE_INTERVAL_SECONDS,
+        Math.ceil(duration / VIDEO_MAX_FRAMES)
+      );
+      const times: number[] = [];
+      for (let t = 0; t < duration; t += step) times.push(t);
+      if (times.length === 0) times.push(0);
+
+      const canvas = document.createElement("canvas");
+      const findings: VideoFrameFinding[] = [];
+
+      const seekTo = (sec: number) =>
+        new Promise<void>((resolve, reject) => {
+          const onSeeked = () => {
+            video.removeEventListener("seeked", onSeeked);
+            resolve();
+          };
+          const onError = () => {
+            video.removeEventListener("error", onError);
+            reject(new Error(`Failed seeking to ${sec}s`));
+          };
+          video.addEventListener("seeked", onSeeked, { once: true });
+          video.addEventListener("error", onError, { once: true });
+          video.currentTime = Math.min(sec, Math.max(0, video.duration - 0.1));
+        });
+
+      for (let i = 0; i < times.length; i++) {
+        const second = times[i];
+        setVideoProgress(`Scanning frame ${i + 1}/${times.length}...`);
+        await seekTo(second);
+
+        const srcW = video.videoWidth || 1280;
+        const srcH = video.videoHeight || 720;
+        const targetW = Math.min(960, srcW);
+        const targetH = Math.max(1, Math.round((srcH / srcW) * targetW));
+        canvas.width = targetW;
+        canvas.height = targetH;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) throw new Error("Could not initialize canvas");
+        ctx.drawImage(video, 0, 0, targetW, targetH);
+
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.72);
+        const base64 = dataUrl.split(",")[1];
+        const h = String(Math.floor(second / 3600)).padStart(2, "0");
+        const m = String(Math.floor((second % 3600) / 60)).padStart(2, "0");
+        const s = String(second % 60).padStart(2, "0");
+        const timecode = `${h}:${m}:${s}`;
+
+        const res = await fetch("/api/analyze-video-frame", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            second,
+            timecode,
+            imageBase64: base64,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || "Frame analysis failed");
+        }
+        if (Array.isArray(data.risks) && data.risks.length > 0) {
+          findings.push({
+            second: data.second,
+            timecode: data.timecode,
+            risks: data.risks,
+          });
+        }
       }
-      setVideoFindings(data.findings ?? []);
+
+      setVideoFindings(findings);
       setVideoMeta({
-        sampledFrames: data.sampledFrames ?? 0,
-        intervalSeconds: data.intervalSeconds ?? 10,
+        sampledFrames: times.length,
+        intervalSeconds: step,
       });
+      setVideoProgress(`Scan complete (${findings.length} risky timecodes).`);
     } catch (err) {
       setVideoFindings([]);
       setVideoMeta(null);
+      setVideoProgress("");
       setVideoError(err instanceof Error ? err.message : "Video upload failed");
     } finally {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
       setVideoUploading(false);
       if (videoInputRef.current) videoInputRef.current.value = "";
     }
@@ -576,6 +657,9 @@ export default function Home() {
             </button>
             {videoError && (
               <div className="mt-2 text-[10px] text-[var(--red)]">{videoError}</div>
+            )}
+            {videoUploading && videoProgress && (
+              <div className="mt-2 text-[10px] text-[var(--text-dim)]">{videoProgress}</div>
             )}
             {videoMeta && (
               <div className="mt-2 text-[10px] text-[var(--text-dim)]">
