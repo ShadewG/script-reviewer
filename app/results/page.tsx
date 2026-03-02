@@ -217,13 +217,45 @@ function parseVideoSecond(tc: string): number {
   return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
 }
 
+function normalizeText(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function dedupeVideoTimeline(entries: VideoFrameFinding[]): VideoFrameFinding[] {
+  const seenAtByRisk = new Map<string, number>();
+  const WINDOW_SECONDS = 20;
+
+  const sorted = [...entries].sort((a, b) => a.second - b.second);
+  const deduped: VideoFrameFinding[] = [];
+
+  for (const entry of sorted) {
+    const keptRisks = (entry.risks ?? []).filter((risk) => {
+      const riskKey = `${risk.category}|${normalizeText(risk.policyName)}`;
+      const prevAt = seenAtByRisk.get(riskKey);
+      if (typeof prevAt === "number" && Math.abs(entry.second - prevAt) <= WINDOW_SECONDS) {
+        return false;
+      }
+      seenAtByRisk.set(riskKey, entry.second);
+      return true;
+    });
+
+    if (keptRisks.length === 0) continue;
+    deduped.push({
+      ...entry,
+      risks: keptRisks,
+    });
+  }
+
+  return deduped;
+}
+
 function buildVideoTimeline(
   report: SynthesisReport | null,
   policyFlags: PolicyFlag[]
 ): VideoFrameFinding[] {
   const fromReport = report?.videoTimeline?.filter((v) => v.risks?.length > 0) ?? [];
   if (fromReport.length > 0) {
-    return [...fromReport].sort((a, b) => a.second - b.second);
+    return dedupeVideoTimeline(fromReport);
   }
 
   // Fallback for older reports: derive timeline events from policy flags containing [Video HH:MM:SS]
@@ -257,7 +289,7 @@ function buildVideoTimeline(
     map.set(timecode, existing);
   }
 
-  return [...map.values()].sort((a, b) => a.second - b.second);
+  return dedupeVideoTimeline([...map.values()]);
 }
 
 type TabKey = "overview" | "video" | "script" | "legal" | "youtube" | "research" | "raw";
