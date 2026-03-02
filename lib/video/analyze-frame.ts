@@ -43,6 +43,14 @@ const LAW_ENFORCEMENT_ONLY_REGEX =
   /\b(sheriff|police|department|badge|uniform|officer|deputy|bodycam|law enforcement)\b/i;
 const ESCALATION_CONTENT_REGEX =
   /\b(blood|gore|graphic|dead body|corpse|weapon|gun|rifle|knife|drug|meth|cocaine|heroin|address|license plate|phone|email|ssn)\b/i;
+const GRAPHIC_POLICY_REGEX =
+  /\b(graphic|gore|violence|disturbing imagery|trauma|injury)\b/i;
+const GRAPHIC_HARD_EVIDENCE_REGEX =
+  /\b(heavy bleeding|pool of blood|blood pool|open wound|gash|laceration|exposed bone|dismember|decapitat|corpse|dead body|autopsy|severed|stab wound|gunshot wound)\b/i;
+const DIRTY_NOT_INJURY_REGEX =
+  /\b(dirt|mud|dust|grime|dirty|shirtless|sweat|stain|stained)\b/i;
+const UNCERTAIN_INJURY_REGEX =
+  /\b(blood\/wounds|blood or wounds|appears to be blood|may be blood|possibly blood)\b/i;
 
 let _anthropic: Anthropic | null = null;
 function getAnthropic(): Anthropic {
@@ -85,11 +93,29 @@ function isLikelyLawEnforcementFalsePositive(risk: VideoFrameRisk): boolean {
   return LAW_ENFORCEMENT_ONLY_REGEX.test(joined) && !ESCALATION_CONTENT_REGEX.test(joined);
 }
 
+function isLikelyGraphicFalsePositive(risk: VideoFrameRisk): boolean {
+  const joined = `${risk.policyName} ${risk.reasoning} ${risk.detectedText ?? ""}`.toLowerCase();
+  const isGraphicClass =
+    (risk.category === "community_guidelines" || risk.category === "age_restriction") &&
+    GRAPHIC_POLICY_REGEX.test(joined);
+  if (!isGraphicClass) return false;
+
+  // Keep graphic flags only when we have strong explicit injury evidence.
+  if (GRAPHIC_HARD_EVIDENCE_REGEX.test(joined)) return false;
+
+  // Drop common dirty/muddy-shirtless misreads with uncertain blood language.
+  if (DIRTY_NOT_INJURY_REGEX.test(joined)) return true;
+  if (UNCERTAIN_INJURY_REGEX.test(joined)) return true;
+
+  return false;
+}
+
 function normalizeAndFilterRisks(risks: VideoFrameRisk[]): VideoFrameRisk[] {
   const cleaned = risks
     .filter((r) => r && r.reasoning && r.policyName)
     .filter((r) => {
       if (isLikelyLawEnforcementFalsePositive(r)) return false;
+      if (isLikelyGraphicFalsePositive(r)) return false;
 
       if (r.category === "privacy") {
         return hasConcretePrivacyEvidence(r);
