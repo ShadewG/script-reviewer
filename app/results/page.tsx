@@ -187,28 +187,37 @@ function getRiskyLines(
   policyFlags: PolicyFlag[]
 ): Array<{ line: number; text: string; tags: string[] }> {
   const lines = scriptText.split("\n");
-  const map = new Map<number, Set<string>>();
+  const map = new Map<number, { tags: Set<string>; flagTexts: string[] }>();
 
   for (const flag of legalFlags) {
     if (!flag.line) continue;
-    const set = map.get(flag.line) ?? new Set<string>();
-    set.add(`legal:${flag.riskType}`);
-    map.set(flag.line, set);
+    const entry = map.get(flag.line) ?? { tags: new Set<string>(), flagTexts: [] };
+    entry.tags.add(`legal:${flag.riskType}`);
+    if (flag.text) entry.flagTexts.push(flag.text);
+    map.set(flag.line, entry);
   }
   for (const flag of policyFlags) {
     if (!flag.line) continue;
-    const set = map.get(flag.line) ?? new Set<string>();
-    set.add(`policy:${flag.category}`);
-    map.set(flag.line, set);
+    const entry = map.get(flag.line) ?? { tags: new Set<string>(), flagTexts: [] };
+    entry.tags.add(`policy:${flag.category}`);
+    if (flag.text) entry.flagTexts.push(flag.text);
+    map.set(flag.line, entry);
   }
 
   return [...map.entries()]
     .sort((a, b) => a[0] - b[0])
-    .map(([line, tags]) => ({
-      line,
-      text: lines[line - 1] ?? "",
-      tags: [...tags],
-    }));
+    .map(([line, { tags, flagTexts }]) => {
+      let text = lines[line - 1] ?? "";
+      // For blank lines, show first flag text instead
+      if (!text.trim() && flagTexts.length > 0) {
+        text = flagTexts[0];
+      }
+      // Truncate long text (e.g. entire transcript on one line)
+      if (text.length > 200) {
+        text = text.slice(0, 200) + "…";
+      }
+      return { line, text: text || "(blank line)", tags: [...tags] };
+    });
 }
 
 function parseVideoSecond(tc: string): number {

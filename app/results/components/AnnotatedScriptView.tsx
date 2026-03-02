@@ -133,69 +133,124 @@ interface Props {
   flagFilter?: "all" | "legal" | "policy";
 }
 
+/** Split text into chunks: sentence boundaries first, then word boundaries as fallback */
+function splitIntoChunks(text: string, maxLen: number): string[] {
+  const sentenceParts = text.split(/(?<=[.!?])\s+/);
+  const chunks: string[] = [];
+  let current = "";
+  for (const part of sentenceParts) {
+    if (current.length + part.length + 1 > maxLen && current.length > 0) {
+      chunks.push(current);
+      current = part;
+    } else {
+      current = current ? current + " " + part : part;
+    }
+  }
+  if (current) chunks.push(current);
+
+  // Further split any chunks still over maxLen by word boundary
+  const result: string[] = [];
+  for (const chunk of chunks) {
+    if (chunk.length <= maxLen) {
+      result.push(chunk);
+    } else {
+      const words = chunk.split(/\s+/);
+      let cur = "";
+      for (const word of words) {
+        if (cur.length + word.length + 1 > maxLen && cur.length > 0) {
+          result.push(cur);
+          cur = word;
+        } else {
+          cur = cur ? cur + " " + word : word;
+        }
+      }
+      if (cur) result.push(cur);
+    }
+  }
+  return result.length > 0 ? result : [text];
+}
+
 /**
- * When script lines are very long (e.g. video transcripts stored as one paragraph),
- * split them at sentence boundaries so the viewer is usable, and remap flag line
- * numbers to the new split line numbers.
+ * Normalize script for display: split long lines into readable chunks and
+ * remap flag line numbers using text matching so flags land on the correct
+ * display line rather than all piling onto the first chunk or pointing at blanks.
  */
-function splitLongLines(
+function normalizeScriptView(
   rawLines: string[],
   legalFlags: LegalFlag[],
   policyFlags: PolicyFlag[],
   maxLen = 200,
 ): { lines: string[]; legalFlags: LegalFlag[]; policyFlags: PolicyFlag[] } {
-  // Check if any line exceeds maxLen — skip entirely if not needed
   if (!rawLines.some((l) => l.length > maxLen)) {
     return { lines: rawLines, legalFlags, policyFlags };
   }
 
+  // Step 1: Split long lines into display chunks
   const lines: string[] = [];
-  // Map: original 1-based line number → array of new 1-based line numbers
-  const lineMap = new Map<number, number[]>();
-
+  const origToNew = new Map<number, number[]>();
   for (let i = 0; i < rawLines.length; i++) {
-    const origLineNum = i + 1;
+    const origLine = i + 1;
     const raw = rawLines[i];
-
     if (raw.length <= maxLen) {
       lines.push(raw);
-      lineMap.set(origLineNum, [lines.length]);
+      origToNew.set(origLine, [lines.length]);
     } else {
-      // Split at sentence boundaries (. ! ? followed by space or end)
-      const sentences: string[] = [];
-      let current = "";
-      // Use regex to split on sentence-ending punctuation followed by space
-      const parts = raw.split(/(?<=[.!?])\s+/);
-      for (const part of parts) {
-        if (current.length + part.length + 1 > maxLen && current.length > 0) {
-          sentences.push(current);
-          current = part;
-        } else {
-          current = current ? current + " " + part : part;
-        }
+      const chunks = splitIntoChunks(raw, maxLen);
+      const newNums: number[] = [];
+      for (const chunk of chunks) {
+        lines.push(chunk);
+        newNums.push(lines.length);
       }
-      if (current) sentences.push(current);
-
-      const newLineNums: number[] = [];
-      for (const sentence of sentences) {
-        lines.push(sentence);
-        newLineNums.push(lines.length);
-      }
-      lineMap.set(origLineNum, newLineNums);
+      origToNew.set(origLine, newNums);
     }
   }
 
-  // Remap flag line numbers — assign to first new line of the split
-  const remapFlag = <T extends { line?: number }>(flag: T): T => {
-    if (!flag.line) return flag;
-    const mapped = lineMap.get(flag.line);
-    return mapped ? { ...flag, line: mapped[0] } : flag;
-  };
+  // Step 2: Lowercase index for text matching
+  const lowerLines = lines.map((l) => l.toLowerCase().trim());
+
+  // Step 3: Find best display line for a given flag text
+  function findBestLine(flagText: string, origLine?: number): number | undefined {
+    const lower = (flagText || "").toLowerCase().trim();
+
+    if (lower) {
+      // Exact substring: flag text found within a display line
+      for (let j = 0; j < lowerLines.length; j++) {
+        if (lowerLines[j] && lowerLines[j].includes(lower)) return j + 1;
+      }
+      // First 8 words match (handles long flag text that spans multiple lines)
+      const firstWords = lower.split(/\s+/).slice(0, 8).join(" ");
+      if (firstWords.length > 15) {
+        for (let j = 0; j < lowerLines.length; j++) {
+          if (lowerLines[j] && lowerLines[j].includes(firstWords)) return j + 1;
+        }
+      }
+      // Last 6 words match
+      const lastWords = lower.split(/\s+/).slice(-6).join(" ");
+      if (lastWords.length > 15 && lastWords !== firstWords) {
+        for (let j = 0; j < lowerLines.length; j++) {
+          if (lowerLines[j] && lowerLines[j].includes(lastWords)) return j + 1;
+        }
+      }
+    }
+
+    // Fall back to line number mapping
+    if (origLine) {
+      const m = origToNew.get(origLine);
+      return m ? m[0] : origLine;
+    }
+    return origLine;
+  }
 
   return {
     lines,
-    legalFlags: legalFlags.map(remapFlag),
-    policyFlags: policyFlags.map(remapFlag),
+    legalFlags: legalFlags.map((f) => {
+      const nl = findBestLine(f.text, f.line);
+      return nl !== f.line ? { ...f, line: nl } : f;
+    }),
+    policyFlags: policyFlags.map((f) => {
+      const nl = findBestLine(f.text, f.line);
+      return nl !== f.line ? { ...f, line: nl } : f;
+    }),
   };
 }
 
@@ -209,7 +264,7 @@ export default function AnnotatedScriptView({
   flagFilter = "all",
 }: Props) {
   const { lines, legalFlags, policyFlags } = useMemo(
-    () => splitLongLines(scriptText.split("\n"), rawLegalFlags, rawPolicyFlags),
+    () => normalizeScriptView(scriptText.split("\n"), rawLegalFlags, rawPolicyFlags),
     [scriptText, rawLegalFlags, rawPolicyFlags],
   );
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
