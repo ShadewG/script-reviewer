@@ -133,16 +133,85 @@ interface Props {
   flagFilter?: "all" | "legal" | "policy";
 }
 
+/**
+ * When script lines are very long (e.g. video transcripts stored as one paragraph),
+ * split them at sentence boundaries so the viewer is usable, and remap flag line
+ * numbers to the new split line numbers.
+ */
+function splitLongLines(
+  rawLines: string[],
+  legalFlags: LegalFlag[],
+  policyFlags: PolicyFlag[],
+  maxLen = 200,
+): { lines: string[]; legalFlags: LegalFlag[]; policyFlags: PolicyFlag[] } {
+  // Check if any line exceeds maxLen — skip entirely if not needed
+  if (!rawLines.some((l) => l.length > maxLen)) {
+    return { lines: rawLines, legalFlags, policyFlags };
+  }
+
+  const lines: string[] = [];
+  // Map: original 1-based line number → array of new 1-based line numbers
+  const lineMap = new Map<number, number[]>();
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const origLineNum = i + 1;
+    const raw = rawLines[i];
+
+    if (raw.length <= maxLen) {
+      lines.push(raw);
+      lineMap.set(origLineNum, [lines.length]);
+    } else {
+      // Split at sentence boundaries (. ! ? followed by space or end)
+      const sentences: string[] = [];
+      let current = "";
+      // Use regex to split on sentence-ending punctuation followed by space
+      const parts = raw.split(/(?<=[.!?])\s+/);
+      for (const part of parts) {
+        if (current.length + part.length + 1 > maxLen && current.length > 0) {
+          sentences.push(current);
+          current = part;
+        } else {
+          current = current ? current + " " + part : part;
+        }
+      }
+      if (current) sentences.push(current);
+
+      const newLineNums: number[] = [];
+      for (const sentence of sentences) {
+        lines.push(sentence);
+        newLineNums.push(lines.length);
+      }
+      lineMap.set(origLineNum, newLineNums);
+    }
+  }
+
+  // Remap flag line numbers — assign to first new line of the split
+  const remapFlag = <T extends { line?: number }>(flag: T): T => {
+    if (!flag.line) return flag;
+    const mapped = lineMap.get(flag.line);
+    return mapped ? { ...flag, line: mapped[0] } : flag;
+  };
+
+  return {
+    lines,
+    legalFlags: legalFlags.map(remapFlag),
+    policyFlags: policyFlags.map(remapFlag),
+  };
+}
+
 export default function AnnotatedScriptView({
   scriptText,
-  legalFlags,
-  policyFlags,
+  legalFlags: rawLegalFlags,
+  policyFlags: rawPolicyFlags,
   state,
   caseStatus,
   hasMinors,
   flagFilter = "all",
 }: Props) {
-  const lines = scriptText.split("\n");
+  const { lines, legalFlags, policyFlags } = useMemo(
+    () => splitLongLines(scriptText.split("\n"), rawLegalFlags, rawPolicyFlags),
+    [scriptText, rawLegalFlags, rawPolicyFlags],
+  );
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
   const [editingLine, setEditingLine] = useState<number | null>(null);
   const [currentFlagIndex, setCurrentFlagIndex] = useState(0);
