@@ -221,21 +221,68 @@ function normalizeText(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
 }
 
+const RISK_STOPWORDS = new Set([
+  "the","a","an","and","or","to","of","in","on","for","with","from","by",
+  "this","that","is","are","was","were","be","it","as","at","under",
+  "content","video","frame","imagery","image","scene","policy","guidelines",
+  "graphic","violence","disturbing","advertiser","friendly","true","crime",
+  "exposure","personal","information","risk",
+]);
+
+function riskTokens(input: string): Set<string> {
+  const out = new Set<string>();
+  for (const raw of normalizeText(input).split(" ")) {
+    const t = raw.trim();
+    if (!t || t.length < 3 || RISK_STOPWORDS.has(t)) continue;
+    out.add(t);
+  }
+  return out;
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter++;
+  const union = a.size + b.size - inter;
+  return union <= 0 ? 0 : inter / union;
+}
+
 function dedupeVideoTimeline(entries: VideoFrameFinding[]): VideoFrameFinding[] {
-  const seenAtByRisk = new Map<string, number>();
-  const WINDOW_SECONDS = 20;
+  const WINDOW_SECONDS = 30;
+  const recentByCategory = new Map<
+    string,
+    Array<{ second: number; tokens: Set<string>; detected: string }>
+  >();
 
   const sorted = [...entries].sort((a, b) => a.second - b.second);
   const deduped: VideoFrameFinding[] = [];
 
   for (const entry of sorted) {
     const keptRisks = (entry.risks ?? []).filter((risk) => {
-      const riskKey = `${risk.category}|${normalizeText(risk.policyName)}`;
-      const prevAt = seenAtByRisk.get(riskKey);
-      if (typeof prevAt === "number" && Math.abs(entry.second - prevAt) <= WINDOW_SECONDS) {
-        return false;
+      const category = risk.category;
+      const detected = normalizeText(risk.detectedText ?? "");
+      const tokens = riskTokens(
+        `${risk.policyName} ${risk.reasoning} ${risk.detectedText ?? ""}`
+      );
+      const recent = recentByCategory.get(category) ?? [];
+
+      for (const prev of recent) {
+        if (Math.abs(entry.second - prev.second) > WINDOW_SECONDS) continue;
+        const sameDetected =
+          detected.length > 0 &&
+          prev.detected.length > 0 &&
+          (detected.includes(prev.detected) || prev.detected.includes(detected));
+        const sim = jaccard(tokens, prev.tokens);
+        if (sameDetected || sim >= 0.52) {
+          return false;
+        }
       }
-      seenAtByRisk.set(riskKey, entry.second);
+
+      recent.push({ second: entry.second, tokens, detected });
+      recentByCategory.set(
+        category,
+        recent.filter((r) => Math.abs(entry.second - r.second) <= WINDOW_SECONDS)
+      );
       return true;
     });
 
@@ -462,11 +509,11 @@ function ResultsContent() {
         </div>
       </header>
 
-      {/* Verdict Banner — sticky */}
+      {/* Verdict Banner */}
       {report && (
         <div
-          className="border p-4 mb-6 sticky top-0 z-10 bg-[var(--bg)]"
-          style={{ borderColor: verdictColor(report.verdict), boxShadow: "0 2px 8px rgba(0,0,0,0.25)" }}
+          className="border p-4 mb-6"
+          style={{ borderColor: verdictColor(report.verdict) }}
         >
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
