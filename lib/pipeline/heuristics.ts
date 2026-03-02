@@ -81,6 +81,20 @@ function severityForProfanity(word: string): "low" | "medium" | "high" {
   return "high";
 }
 
+function excerptAroundAddress(text: string): string {
+  const WINDOW = 90;
+  for (const rx of ADDRESS_REGEXES) {
+    const match = text.match(rx);
+    if (!match || match.index === undefined) continue;
+    const start = Math.max(0, match.index - WINDOW);
+    const end = Math.min(text.length, match.index + match[0].length + WINDOW);
+    const prefix = start > 0 ? "..." : "";
+    const suffix = end < text.length ? "..." : "";
+    return `${prefix}${text.slice(start, end).trim()}${suffix}`;
+  }
+  return text.length > 220 ? `${text.slice(0, 220).trim()}...` : text;
+}
+
 export function heuristicPolicyFlags(script: string): PolicyFlag[] {
   const lines = script.split("\n");
   const flags: PolicyFlag[] = [];
@@ -95,9 +109,10 @@ export function heuristicPolicyFlags(script: string): PolicyFlag[] {
       const key = `addr:${lineNumber}`;
       if (!seen.has(key)) {
         seen.add(key);
+        const excerpt = excerptAroundAddress(text);
         flags.push({
           line: lineNumber,
-          text,
+          text: excerpt,
           category: "community_guidelines",
           severity: "high",
           policyName: "Privacy Guidelines (PII)",
@@ -166,10 +181,11 @@ export function heuristicLegalFlags(script: string): LegalFlag[] {
     const text = lines[i].trim();
     if (!text) continue;
     if (!ADDRESS_REGEXES.some((rx) => rx.test(text))) continue;
+    const excerpt = excerptAroundAddress(text);
 
     flags.push({
       line: lineNumber,
-      text,
+      text: excerpt,
       person: "Identifiable individual",
       riskType: "privacy",
       severity: "high",
