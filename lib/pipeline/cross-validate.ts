@@ -87,6 +87,49 @@ function medianSeverity(severities: string[]): Severity {
   return SEV_ORDER[indices[Math.floor(indices.length / 2)]];
 }
 
+function firstSentence(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  const m = trimmed.match(/(.+?[.!?])(?:\s|$)/);
+  return (m?.[1] ?? trimmed).trim();
+}
+
+function normalizeReason(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function buildConsensusReasoning(
+  group: Array<{ flag: LegalFlag; model: string }>,
+  baseReasoning: string,
+  originalSeverities: Record<string, string>,
+  finalSeverity: Severity
+): string {
+  const modelNames = group.map((g) => g.model.toUpperCase()).join(" + ");
+  const baseFirst = firstSentence(baseReasoning);
+  const uniqExtras: string[] = [];
+
+  const seen = new Set<string>([normalizeReason(baseFirst)]);
+  for (const g of group) {
+    const s = firstSentence(g.flag.reasoning);
+    const key = normalizeReason(s);
+    if (!s || seen.has(key)) continue;
+    seen.add(key);
+    uniqExtras.push(s);
+  }
+
+  const sevPairs = Object.entries(originalSeverities)
+    .map(([m, s]) => `${m.toUpperCase()}: ${s}`)
+    .join(", ");
+  const sevValues = new Set(Object.values(originalSeverities));
+  const sevNote =
+    sevValues.size > 1
+      ? ` Model severity differed (${sevPairs}); resolved to ${finalSeverity}.`
+      : "";
+
+  const extras = uniqExtras.slice(0, 2).join(" ");
+  return `Cross-model consensus (${modelNames}): ${baseFirst}${extras ? ` ${extras}` : ""}${sevNote}`;
+}
+
 export interface CrossValidatedLegalFlag extends LegalFlag {
   agreementCount: number;
   models: string[];
@@ -182,9 +225,12 @@ export function mergeFlags(
       avgConfidence * (0.7 + 0.15 * agreementCount)
     );
 
-    // Combine reasoning
-    const allReasonings = group.map(
-      (g) => `[${g.model.toUpperCase()}] ${g.flag.reasoning}`
+    // Build one readable consensus summary instead of raw model blocks.
+    const reasoning = buildConsensusReasoning(
+      group,
+      base.reasoning,
+      originalSeverities,
+      severity
     );
 
     // counselReview if ANY model says so
@@ -201,7 +247,7 @@ export function mergeFlags(
       confidence,
       counselReview,
       saferRewrite,
-      reasoning: allReasonings.join("\n\n"),
+      reasoning,
       agreementCount,
       models,
       originalSeverities,
