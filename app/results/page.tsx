@@ -348,6 +348,58 @@ function buildVideoTimeline(
   return dedupeVideoTimeline([...map.values()]);
 }
 
+function normalizeLoose(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/\[video\s+\d\d:\d\d:\d\d\]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function dedupeLegalFlagsForDisplay(flags: LegalFlag[]): LegalFlag[] {
+  const out: LegalFlag[] = [];
+  const seen = new Set<string>();
+  for (const f of flags) {
+    const key = `${f.line ?? "na"}|${f.riskType}|${f.person.toLowerCase()}|${normalizeLoose(f.text).slice(0, 120)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(f);
+  }
+  return out;
+}
+
+function dedupePolicyFlagsForDisplay(flags: PolicyFlag[]): PolicyFlag[] {
+  const out: PolicyFlag[] = [];
+  const seen = new Set<string>();
+  for (const f of flags) {
+    const key = `${f.line ?? "na"}|${f.category}|${f.impact}|${normalizeLoose(f.text).slice(0, 120)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(f);
+  }
+  return out;
+}
+
+type EditItem = { line?: number; original: string; suggested: string; reason: string };
+
+function dedupeEditsForDisplay(edits: EditItem[]): EditItem[] {
+  const out: EditItem[] = [];
+  const seen = new Set<string>();
+  for (const e of edits) {
+    const key = `${e.line ?? "na"}|${normalizeLoose(e.original).slice(0, 80)}|${normalizeLoose(e.reason).slice(0, 80)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(e);
+  }
+  return out;
+}
+
+function extractVideoTimecode(text: string): string | null {
+  const m = text.match(/\[Video\s+(\d\d:\d\d:\d\d)\]/i);
+  return m ? m[1] : null;
+}
+
 type TabKey = "overview" | "video" | "script" | "legal" | "youtube" | "research" | "raw";
 
 function ResultsContent() {
@@ -376,13 +428,21 @@ function ResultsContent() {
 
   /* ── Derived data (stable references via useMemo) ── */
   const report = data?.synthesis ?? null;
-  const allLegalFlags = useMemo(
+  const rawLegalFlags = useMemo(
     () => report?.legalFlags ?? data?.legalFlags ?? [],
     [report?.legalFlags, data?.legalFlags],
   );
-  const allPolicyFlags = useMemo(
+  const rawPolicyFlags = useMemo(
     () => report?.policyFlags ?? data?.youtubeFlags ?? [],
     [report?.policyFlags, data?.youtubeFlags],
+  );
+  const allLegalFlags = useMemo(
+    () => dedupeLegalFlagsForDisplay(rawLegalFlags),
+    [rawLegalFlags],
+  );
+  const allPolicyFlags = useMemo(
+    () => dedupePolicyFlagsForDisplay(rawPolicyFlags),
+    [rawPolicyFlags],
   );
   const videoTimeline = useMemo(
     () => buildVideoTimeline(report, allPolicyFlags),
@@ -434,6 +494,38 @@ function ResultsContent() {
         })
         .slice(0, 12),
     [filteredVideoTimeline]
+  );
+  const overviewCriticalEdits = useMemo(
+    () => dedupeEditsForDisplay(report?.criticalEdits ?? []),
+    [report?.criticalEdits]
+  );
+  const overviewRecommendedEdits = useMemo(
+    () => dedupeEditsForDisplay(report?.recommendedEdits ?? []),
+    [report?.recommendedEdits]
+  );
+  const criticalEditsWithMoments = useMemo(
+    () =>
+      overviewCriticalEdits.map((edit) => {
+        const tc =
+          extractVideoTimecode(edit.original) ??
+          extractVideoTimecode(edit.reason) ??
+          extractVideoTimecode(edit.suggested);
+        const moment = tc ? videoTimeline.find((v) => v.timecode === tc) : undefined;
+        return { edit, moment };
+      }),
+    [overviewCriticalEdits, videoTimeline]
+  );
+  const recommendedEditsWithMoments = useMemo(
+    () =>
+      overviewRecommendedEdits.map((edit) => {
+        const tc =
+          extractVideoTimecode(edit.original) ??
+          extractVideoTimecode(edit.reason) ??
+          extractVideoTimecode(edit.suggested);
+        const moment = tc ? videoTimeline.find((v) => v.timecode === tc) : undefined;
+        return { edit, moment };
+      }),
+    [overviewRecommendedEdits, videoTimeline]
   );
 
   /* Tab badge counts */
@@ -653,17 +745,27 @@ function ResultsContent() {
       <div className="min-h-[400px]">
         {activeTab === "overview" && report && (
           <div className="space-y-6">
-            {report.criticalEdits?.length > 0 && (
+            {criticalEditsWithMoments.length > 0 && (
               <section>
                 <h3 className="text-sm uppercase tracking-wider text-[var(--red)] mb-3 flex items-center gap-2">
                   <span className="w-2 h-2 bg-[var(--red)]" /> Critical Edits Required
                 </h3>
                 <div className="space-y-2">
-                  {report.criticalEdits.map((edit, i) => (
+                  {criticalEditsWithMoments.map(({ edit, moment }, i) => (
                     <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-4">
                       <div className="text-sm text-[var(--red)] mb-2 font-medium">
                         {edit.line ? `Line ${edit.line} — ` : ""}{edit.reason}
                       </div>
+                      {moment?.thumbnailDataUrl && (
+                        <div className="mb-2">
+                          <img
+                            src={moment.thumbnailDataUrl}
+                            alt={`Related frame at ${moment.timecode}`}
+                            className="max-w-[420px] w-full border border-[var(--border)]"
+                          />
+                          <div className="text-[10px] text-[var(--text-dim)] mt-1">Related video frame: {moment.timecode}</div>
+                        </div>
+                      )}
                       <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Original</div>
                       <div className="text-sm text-[var(--text)] mb-2 leading-relaxed border border-[var(--border)] bg-[var(--bg)] p-2">
                         {edit.original}
@@ -678,17 +780,27 @@ function ResultsContent() {
               </section>
             )}
 
-            {report.recommendedEdits?.length > 0 && (
+            {recommendedEditsWithMoments.length > 0 && (
               <section>
                 <h3 className="text-sm uppercase tracking-wider text-[var(--yellow)] mb-3 flex items-center gap-2">
                   <span className="w-2 h-2 bg-[var(--yellow)]" /> Recommended Edits
                 </h3>
                 <div className="space-y-2">
-                  {report.recommendedEdits.map((edit, i) => (
+                  {recommendedEditsWithMoments.map(({ edit, moment }, i) => (
                     <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-4">
                       <div className="text-sm text-[var(--yellow)] mb-2 font-medium">
                         {edit.line ? `Line ${edit.line} — ` : ""}{edit.reason}
                       </div>
+                      {moment?.thumbnailDataUrl && (
+                        <div className="mb-2">
+                          <img
+                            src={moment.thumbnailDataUrl}
+                            alt={`Related frame at ${moment.timecode}`}
+                            className="max-w-[420px] w-full border border-[var(--border)]"
+                          />
+                          <div className="text-[10px] text-[var(--text-dim)] mt-1">Related video frame: {moment.timecode}</div>
+                        </div>
+                      )}
                       <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Original</div>
                       <div className="text-sm text-[var(--text)] mb-2 leading-relaxed border border-[var(--border)] bg-[var(--bg)] p-2">
                         {edit.original}
