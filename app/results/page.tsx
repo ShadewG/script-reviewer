@@ -305,6 +305,110 @@ function dedupeVideoTimeline(entries: VideoFrameFinding[]): VideoFrameFinding[] 
   return deduped;
 }
 
+type OverviewVideoGroup = {
+  item: VideoFrameFinding;
+  signature: string;
+  startSecond: number;
+  endSecond: number;
+  startTimecode: string;
+  endTimecode: string;
+  count: number;
+};
+
+function normalizeRiskText(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/\b\d{2}:\d{2}:\d{2}\b/g, " ")
+    .replace(/\b\d{1,4}[-/:]\d{1,4}[-/:]?\d{0,4}\b/g, " ")
+    .replace(/\b[0-9a-f]{2,}\b/g, " ")
+    .replace(/[^a-z\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function toOverviewSignature(item: VideoFrameFinding): string {
+  const risks = item.risks ?? [];
+  const hasPrivacy = risks.some((r) => r.category === "privacy");
+  const joined = normalizeRiskText(
+    risks
+      .map((r) => `${r.policyName} ${r.reasoning} ${r.detectedText ?? ""}`)
+      .join(" ")
+  );
+
+  if (
+    hasPrivacy &&
+    /\b(ip address|meta platforms|device|fingerprint|agent string|login|account)\b/.test(joined)
+  ) {
+    return "privacy:ip_record_exposure";
+  }
+  if (hasPrivacy && /\b(phone|email|address|license plate|contact)\b/.test(joined)) {
+    return "privacy:contact_or_address";
+  }
+  if (hasPrivacy && /\b(minor|child|daughter|son|grandchild|unblurred)\b/.test(joined)) {
+    return "privacy:minor_identity";
+  }
+
+  const dominant = [...risks].sort((a, b) => (SEV_ORDER[b.severity] ?? 0) - (SEV_ORDER[a.severity] ?? 0))[0];
+  if (!dominant) return "other:unknown";
+  return `${dominant.category}:${normalizeRiskText(dominant.policyName).slice(0, 40)}`;
+}
+
+function groupOverviewVideoTimeline(entries: VideoFrameFinding[]): OverviewVideoGroup[] {
+  const sorted = [...entries].sort((a, b) => a.second - b.second);
+  const groups: OverviewVideoGroup[] = [];
+  const WINDOW = 180;
+
+  for (const item of sorted) {
+    const signature = toOverviewSignature(item);
+    const maxSev = item.risks.reduce(
+      (worst, r) => ((SEV_ORDER[r.severity] ?? 0) > (SEV_ORDER[worst] ?? 0) ? r.severity : worst),
+      "low"
+    );
+    const found = groups.find(
+      (g) => g.signature === signature && item.second - g.endSecond <= WINDOW
+    );
+
+    if (!found) {
+      groups.push({
+        item,
+        signature,
+        startSecond: item.second,
+        endSecond: item.second,
+        startTimecode: item.timecode,
+        endTimecode: item.timecode,
+        count: 1,
+      });
+      continue;
+    }
+
+    found.endSecond = item.second;
+    found.endTimecode = item.timecode;
+    found.count += 1;
+
+    const foundMax = found.item.risks.reduce(
+      (worst, r) => ((SEV_ORDER[r.severity] ?? 0) > (SEV_ORDER[worst] ?? 0) ? r.severity : worst),
+      "low"
+    );
+    if ((SEV_ORDER[maxSev] ?? 0) > (SEV_ORDER[foundMax] ?? 0)) {
+      found.item = item;
+    }
+  }
+
+  return groups.sort((a, b) => {
+    const sevA = a.item.risks.reduce(
+      (worst, r) => ((SEV_ORDER[r.severity] ?? 0) > (SEV_ORDER[worst] ?? 0) ? r.severity : worst),
+      "low"
+    );
+    const sevB = b.item.risks.reduce(
+      (worst, r) => ((SEV_ORDER[r.severity] ?? 0) > (SEV_ORDER[worst] ?? 0) ? r.severity : worst),
+      "low"
+    );
+    const sevCmp = compareSeverity(sevA, sevB);
+    if (sevCmp !== 0) return sevCmp;
+    return a.startSecond - b.startSecond;
+  });
+}
+
 function buildVideoTimeline(
   report: SynthesisReport | null,
   policyFlags: PolicyFlag[]
@@ -476,23 +580,7 @@ function ResultsContent() {
   );
   const overviewVideoTimeline = useMemo(
     () =>
-      [...filteredVideoTimeline]
-        .sort((a, b) => {
-          const maxA = a.risks.reduce(
-            (worst, r) =>
-              (SEV_ORDER[r.severity] ?? 0) > (SEV_ORDER[worst] ?? 0) ? r.severity : worst,
-            "low"
-          );
-          const maxB = b.risks.reduce(
-            (worst, r) =>
-              (SEV_ORDER[r.severity] ?? 0) > (SEV_ORDER[worst] ?? 0) ? r.severity : worst,
-            "low"
-          );
-          const sevCmp = compareSeverity(maxA, maxB);
-          if (sevCmp !== 0) return sevCmp;
-          return a.second - b.second;
-        })
-        .slice(0, 12),
+      groupOverviewVideoTimeline(filteredVideoTimeline).slice(0, 12),
     [filteredVideoTimeline]
   );
   const overviewCriticalEdits = useMemo(
@@ -854,7 +942,8 @@ function ResultsContent() {
                   </button>
                 </div>
                 <div className="space-y-2">
-                  {overviewVideoTimeline.map((item, i) => {
+                  {overviewVideoTimeline.map((group, i) => {
+                    const item = group.item;
                     const maxSev = item.risks.reduce((worst, r) =>
                       (SEV_ORDER[r.severity] ?? 0) > (SEV_ORDER[worst] ?? 0) ? r.severity : worst,
                     "low");
@@ -866,10 +955,16 @@ function ResultsContent() {
                         className="border border-[var(--border)] bg-[var(--bg-surface)]"
                       >
                         <summary className="list-none cursor-pointer px-3 py-2 flex items-center gap-3 hover:bg-[var(--bg-elevated)]">
-                          <span className="text-sm font-mono text-[var(--amber)]">{item.timecode}</span>
+                          <span className="text-sm font-mono text-[var(--amber)]">
+                            {group.startTimecode === group.endTimecode
+                              ? group.startTimecode
+                              : `${group.startTimecode}–${group.endTimecode}`}
+                          </span>
                           <span className="text-[10px] uppercase" style={{ color: sevColor(maxSev) }}>{maxSev}</span>
                           <span className="text-xs text-[var(--text)] truncate">{categories.join(", ")}</span>
-                          <span className="ml-auto text-[10px] text-[var(--text-dim)]">{item.risks.length} risks</span>
+                          <span className="ml-auto text-[10px] text-[var(--text-dim)]">
+                            {group.count} moment{group.count === 1 ? "" : "s"} · {item.risks.length} risk{item.risks.length === 1 ? "" : "s"}
+                          </span>
                         </summary>
                         <div className="px-3 pb-3 pt-2 border-t border-[var(--border)] bg-[var(--bg-elevated)]">
                           {item.thumbnailDataUrl && (
