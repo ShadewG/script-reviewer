@@ -414,6 +414,27 @@ function ResultsContent() {
     }),
     [videoTimeline, minSeverity],
   );
+  const overviewVideoTimeline = useMemo(
+    () =>
+      [...filteredVideoTimeline]
+        .sort((a, b) => {
+          const maxA = a.risks.reduce(
+            (worst, r) =>
+              (SEV_ORDER[r.severity] ?? 0) > (SEV_ORDER[worst] ?? 0) ? r.severity : worst,
+            "low"
+          );
+          const maxB = b.risks.reduce(
+            (worst, r) =>
+              (SEV_ORDER[r.severity] ?? 0) > (SEV_ORDER[worst] ?? 0) ? r.severity : worst,
+            "low"
+          );
+          const sevCmp = compareSeverity(maxA, maxB);
+          if (sevCmp !== 0) return sevCmp;
+          return a.second - b.second;
+        })
+        .slice(0, 12),
+    [filteredVideoTimeline]
+  );
 
   /* Tab badge counts */
   const tabCounts: Partial<Record<TabKey, number>> = useMemo(() => ({
@@ -643,8 +664,14 @@ function ResultsContent() {
                       <div className="text-sm text-[var(--red)] mb-2 font-medium">
                         {edit.line ? `Line ${edit.line} — ` : ""}{edit.reason}
                       </div>
-                      <div className="text-sm text-[var(--text-dim)] line-through mb-1 leading-relaxed">{edit.original}</div>
-                      <div className="text-sm text-[var(--green)] leading-relaxed">{edit.suggested}</div>
+                      <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Original</div>
+                      <div className="text-sm text-[var(--text)] mb-2 leading-relaxed border border-[var(--border)] bg-[var(--bg)] p-2">
+                        {edit.original}
+                      </div>
+                      <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Suggested</div>
+                      <div className="text-sm text-[var(--green)] leading-relaxed border border-[var(--border)] bg-[var(--bg)] p-2">
+                        {edit.suggested}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -662,8 +689,14 @@ function ResultsContent() {
                       <div className="text-sm text-[var(--yellow)] mb-2 font-medium">
                         {edit.line ? `Line ${edit.line} — ` : ""}{edit.reason}
                       </div>
-                      <div className="text-sm text-[var(--text-dim)] line-through mb-1 leading-relaxed">{edit.original}</div>
-                      <div className="text-sm text-[var(--green)] leading-relaxed">{edit.suggested}</div>
+                      <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Original</div>
+                      <div className="text-sm text-[var(--text)] mb-2 leading-relaxed border border-[var(--border)] bg-[var(--bg)] p-2">
+                        {edit.original}
+                      </div>
+                      <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Suggested</div>
+                      <div className="text-sm text-[var(--green)] leading-relaxed border border-[var(--border)] bg-[var(--bg)] p-2">
+                        {edit.suggested}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -691,6 +724,71 @@ function ResultsContent() {
                       <div className="text-xs text-[var(--text)]">{item.text || "(blank line)"}</div>
                     </div>
                   ))}
+                </div>
+              </section>
+            )}
+
+            {overviewVideoTimeline.length > 0 && (
+              <section>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-xs uppercase tracking-wider text-[var(--amber)] flex items-center gap-2">
+                    <span className="w-2 h-2 bg-[var(--amber)]" /> Video Moments (Dropdown)
+                  </h3>
+                  <button
+                    onClick={() => setActiveTab("video")}
+                    className="text-[10px] uppercase tracking-wider px-2 py-1 border border-[var(--border)] hover:bg-[var(--bg-elevated)] text-[var(--text-dim)]"
+                  >
+                    Open Full Video Tab
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  {overviewVideoTimeline.map((item, i) => {
+                    const maxSev = item.risks.reduce((worst, r) =>
+                      (SEV_ORDER[r.severity] ?? 0) > (SEV_ORDER[worst] ?? 0) ? r.severity : worst,
+                    "low");
+                    const categories = [...new Set(item.risks.map(r => r.category.replaceAll("_", " ")))];
+                    return (
+                      <details
+                        key={`${item.timecode}-${i}`}
+                        open={i < 2}
+                        className="border border-[var(--border)] bg-[var(--bg-surface)]"
+                      >
+                        <summary className="list-none cursor-pointer px-3 py-2 flex items-center gap-3 hover:bg-[var(--bg-elevated)]">
+                          <span className="text-sm font-mono text-[var(--amber)]">{item.timecode}</span>
+                          <span className="text-[10px] uppercase" style={{ color: sevColor(maxSev) }}>{maxSev}</span>
+                          <span className="text-xs text-[var(--text)] truncate">{categories.join(", ")}</span>
+                          <span className="ml-auto text-[10px] text-[var(--text-dim)]">{item.risks.length} risks</span>
+                        </summary>
+                        <div className="px-3 pb-3 pt-2 border-t border-[var(--border)] bg-[var(--bg-elevated)]">
+                          {item.thumbnailDataUrl && (
+                            <img
+                              src={item.thumbnailDataUrl}
+                              alt={`Frame at ${item.timecode}`}
+                              className="max-w-[420px] w-full border border-[var(--border)] mb-2"
+                            />
+                          )}
+                          <div className="space-y-2">
+                            {item.risks.map((risk, j) => (
+                              <div key={j} className="border border-[var(--border)] bg-[var(--bg)] p-2">
+                                <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                  <span className="text-[10px] uppercase font-semibold" style={{ color: sevColor(risk.severity) }}>
+                                    {risk.severity}
+                                  </span>
+                                  <span className="text-[10px] text-[var(--text-dim)] uppercase border border-[var(--border)] px-1.5 py-0.5">
+                                    {risk.category.replaceAll("_", " ")}
+                                  </span>
+                                  {risk.policyName && (
+                                    <span className="text-[10px] text-[var(--text-dim)]">{risk.policyName}</span>
+                                  )}
+                                </div>
+                                <p className="text-xs text-[var(--text)] leading-relaxed">{risk.reasoning}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </details>
+                    );
+                  })}
                 </div>
               </section>
             )}

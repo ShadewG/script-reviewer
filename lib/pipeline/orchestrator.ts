@@ -96,6 +96,117 @@ function mergeLegalFlags(
   return merged;
 }
 
+const SEVERITY_ORDER: Record<string, number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+  severe: 3,
+};
+
+const VIDEO_TEXT_PREFIX = /^\[Video\s+(\d\d):(\d\d):(\d\d)\]\s*/i;
+
+function parseVideoSecondFromText(text: string): number | null {
+  const m = text.match(VIDEO_TEXT_PREFIX);
+  if (!m) return null;
+  return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+}
+
+function normalizeForSimilarity(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(VIDEO_TEXT_PREFIX, "")
+    .replace(/\b\d{2}:\d{2}:\d{2}\b/g, " ")
+    .replace(/\b\d{1,4}[-/:]\d{1,4}[-/:]?\d{0,4}\b/g, " ")
+    .replace(/\b[0-9a-f]{2,}\b/g, " ")
+    .replace(/[^a-z\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokenSet(input: string): Set<string> {
+  return new Set(
+    normalizeForSimilarity(input)
+      .split(" ")
+      .filter((t) => t.length >= 4)
+  );
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter++;
+  const union = a.size + b.size - inter;
+  return union <= 0 ? 0 : inter / union;
+}
+
+function isHigherSeverity(a: string, b: string): boolean {
+  return (SEVERITY_ORDER[a] ?? 0) > (SEVERITY_ORDER[b] ?? 0);
+}
+
+function dedupePolicyFlags(flags: PolicyFlag[]): PolicyFlag[] {
+  const deduped: PolicyFlag[] = [];
+  const WINDOW_SECONDS = 90;
+
+  for (const flag of flags) {
+    const sec = parseVideoSecondFromText(flag.text);
+    const tokens = tokenSet(`${flag.text} ${flag.reasoning} ${flag.policyName}`);
+    const idx = deduped.findIndex((existing) => {
+      if (existing.category !== flag.category) return false;
+      const existingSec = parseVideoSecondFromText(existing.text);
+      if (sec != null && existingSec != null && Math.abs(sec - existingSec) > WINDOW_SECONDS) {
+        return false;
+      }
+      const existingTokens = tokenSet(
+        `${existing.text} ${existing.reasoning} ${existing.policyName}`
+      );
+      return jaccard(tokens, existingTokens) >= 0.62;
+    });
+
+    if (idx === -1) {
+      deduped.push(flag);
+      continue;
+    }
+    if (isHigherSeverity(flag.severity, deduped[idx].severity)) {
+      deduped[idx] = flag;
+    }
+  }
+
+  return deduped;
+}
+
+function dedupeLegalFlags(flags: LegalFlag[]): LegalFlag[] {
+  const deduped: LegalFlag[] = [];
+  const WINDOW_SECONDS = 90;
+
+  for (const flag of flags) {
+    const sec = parseVideoSecondFromText(flag.text);
+    const tokens = tokenSet(`${flag.text} ${flag.reasoning} ${flag.person}`);
+    const idx = deduped.findIndex((existing) => {
+      if (existing.riskType !== flag.riskType) return false;
+      if (existing.person.toLowerCase() !== flag.person.toLowerCase()) return false;
+
+      const existingSec = parseVideoSecondFromText(existing.text);
+      if (sec != null && existingSec != null && Math.abs(sec - existingSec) > WINDOW_SECONDS) {
+        return false;
+      }
+      const existingTokens = tokenSet(
+        `${existing.text} ${existing.reasoning} ${existing.person}`
+      );
+      return jaccard(tokens, existingTokens) >= 0.62;
+    });
+
+    if (idx === -1) {
+      deduped.push(flag);
+      continue;
+    }
+    if (isHigherSeverity(flag.severity, deduped[idx].severity)) {
+      deduped[idx] = flag;
+    }
+  }
+
+  return deduped;
+}
+
 function safeJsonParse<T>(text: string): T {
   let cleaned = text.trim();
   // Strip markdown code fences
@@ -254,6 +365,7 @@ export async function runPipeline(
       policyFlags,
       videoFindingsToPolicyFlags(metadata.videoFindings ?? [])
     );
+    policyFlags = dedupePolicyFlags(policyFlags);
     await prisma.review.update({
       where: { id: reviewId },
       data: { youtubeFlags: policyFlags as never[] },
@@ -331,6 +443,7 @@ export async function runPipeline(
       legalFlags,
       videoFindingsToLegalFlags(metadata.videoFindings ?? [])
     );
+    legalFlags = dedupeLegalFlags(legalFlags);
     await prisma.review.update({
       where: { id: reviewId },
       data: {

@@ -11,33 +11,63 @@ const ADDRESS_REGEXES = [
   new RegExp(`\\b${ADDRESS_SUFFIX}\\s+\\d{1,6}\\b`, "i"),
 ];
 
-const PROFANITY_WORDS = [
-  "fuck",
-  "shit",
-  "bitch",
-  "asshole",
-  "motherfucker",
-  "cunt",
-  "damn",
-  "bastard",
-  "dick",
+const PROFANITY_REGEXES: Array<{ word: string; regex: RegExp }> = [
+  { word: "fuck", regex: /\b(?:fuck(?:ing|ed|er|ers)?|f\*{2,}k)\b/i },
+  { word: "shit", regex: /\b(?:shit(?:ty|ting)?|sh\*{2,}t)\b/i },
+  { word: "bitch", regex: /\b(?:bitch(?:es|y)?|b\*{3,}h)\b/i },
+  { word: "asshole", regex: /\b(?:asshole|a\*{2,}hole)\b/i },
+  { word: "motherfucker", regex: /\bmotherfuck(?:er|ers|ing)?\b/i },
+  { word: "cunt", regex: /\bcunt(?:s)?\b/i },
+  { word: "damn", regex: /\bdamn(?:ed|ing)?\b/i },
+  { word: "bastard", regex: /\bbastard(?:s)?\b/i },
+  { word: "dick", regex: /\bdick(?:head|heads|s)?\b/i },
 ];
 
-function buildObfuscatedProfanityRegex(word: string): RegExp {
-  const chars = word.split("");
-  const pattern = chars
-    .map((ch) => {
-      const isVowel = /[aeiou]/.test(ch);
-      return isVowel ? `${ch}?[^a-z\\n\\r]*` : `${ch}[^a-z\\n\\r]*`;
-    })
-    .join("");
-  return new RegExp(`\\b${pattern}\\b`, "i");
+const STRONG_PRIVACY_EVIDENCE_REGEX =
+  /\b(\d{1,6}\s+[a-z0-9.'-]+(?:\s+[a-z0-9.'-]+){0,6}\s+(?:street|st|avenue|ave|road|rd|lane|ln|drive|dr|boulevard|blvd|court|ct|way|place|pl|terrace|ter|parkway|pkwy)|\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|ip address|license plate|social security|ssn|driver'?s license|passport|account number)\b/i;
+const MINOR_VISUAL_REGEX =
+  /\b(minor|child|kid|juvenile|daughter|son|grandchild)\b/i;
+const FACE_VISUAL_REGEX = /\b(face|photo|portrait|identifiable|unblurred)\b/i;
+const VIDEO_PREFIX_REGEX = /^\[Video\s+(\d\d):(\d\d):(\d\d)\]\s*/i;
+const VIDEO_DEDUPE_WINDOW_SECONDS = 75;
+
+function parseVideoSecond(text: string): number | null {
+  const m = text.match(VIDEO_PREFIX_REGEX);
+  if (!m) return null;
+  return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
 }
 
-const PROFANITY_REGEXES = PROFANITY_WORDS.map((word) => ({
-  word,
-  regex: buildObfuscatedProfanityRegex(word),
-}));
+function normalizeForDedupe(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(VIDEO_PREFIX_REGEX, "")
+    .replace(/\b\d{1,4}[-/:]\d{1,4}[-/:]?\d{0,4}\b/g, " ")
+    .replace(/\b\d{2}:\d{2}:\d{2}\b/g, " ")
+    .replace(/\b[0-9a-f]{2,}\b/g, " ")
+    .replace(/[^a-z\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokenSet(input: string): Set<string> {
+  const tokens = normalizeForDedupe(input).split(" ").filter(Boolean);
+  return new Set(tokens.filter((t) => t.length >= 4));
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter++;
+  const union = a.size + b.size - inter;
+  return union <= 0 ? 0 : inter / union;
+}
+
+function hasStrongPrivacyEvidenceFromVideoRisk(risk: VideoFrameFinding["risks"][number]): boolean {
+  const joined = `${risk.policyName} ${risk.reasoning} ${risk.detectedText ?? ""}`;
+  if (STRONG_PRIVACY_EVIDENCE_REGEX.test(joined)) return true;
+  if (MINOR_VISUAL_REGEX.test(joined) && FACE_VISUAL_REGEX.test(joined)) return true;
+  return false;
+}
 
 const TRAUMA_PATTERNS: Array<{
   regex: RegExp;
@@ -204,14 +234,35 @@ export function videoFindingsToPolicyFlags(
   findings: VideoFrameFinding[]
 ): PolicyFlag[] {
   const flags: PolicyFlag[] = [];
-  const seen = new Set<string>();
+  const recentByCategory = new Map<
+    string,
+    Array<{ second: number; tokens: Set<string> }>
+  >();
 
   for (const finding of findings) {
     for (const risk of finding.risks ?? []) {
+      if (risk.category === "privacy" && !hasStrongPrivacyEvidenceFromVideoRisk(risk)) {
+        continue;
+      }
+
       const text = `[Video ${finding.timecode}] ${risk.detectedText ?? risk.policyName}`;
-      const key = `${finding.second}|${risk.policyName}|${risk.category}|${risk.reasoning}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
+      const tokens = tokenSet(`${text} ${risk.reasoning} ${risk.policyName}`);
+      const bucket = recentByCategory.get(risk.category) ?? [];
+
+      const isNearDuplicate = bucket.some((b) => {
+        if (Math.abs(finding.second - b.second) > VIDEO_DEDUPE_WINDOW_SECONDS) {
+          return false;
+        }
+        return jaccard(tokens, b.tokens) >= 0.58;
+      });
+      if (isNearDuplicate) continue;
+
+      bucket.push({ second: finding.second, tokens });
+      recentByCategory.set(
+        risk.category,
+        bucket.filter((b) => Math.abs(finding.second - b.second) <= VIDEO_DEDUPE_WINDOW_SECONDS)
+      );
+
       flags.push({
         text,
         category:
@@ -235,15 +286,24 @@ export function videoFindingsToLegalFlags(
   findings: VideoFrameFinding[]
 ): LegalFlag[] {
   const flags: LegalFlag[] = [];
-  const seen = new Set<string>();
+  const recent: Array<{ second: number; tokens: Set<string> }> = [];
 
   for (const finding of findings) {
     for (const risk of finding.risks ?? []) {
       if (risk.category !== "privacy") continue;
+      if (!hasStrongPrivacyEvidenceFromVideoRisk(risk)) continue;
       const text = `[Video ${finding.timecode}] ${risk.detectedText ?? "Sensitive visual detail"}`;
-      const key = `${finding.second}|${risk.policyName}|${risk.reasoning}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
+      const tokens = tokenSet(`${text} ${risk.reasoning} ${risk.policyName}`);
+
+      const isNearDuplicate = recent.some((prev) => {
+        if (Math.abs(finding.second - prev.second) > VIDEO_DEDUPE_WINDOW_SECONDS) {
+          return false;
+        }
+        return jaccard(tokens, prev.tokens) >= 0.58;
+      });
+      if (isNearDuplicate) continue;
+      recent.push({ second: finding.second, tokens });
+
       flags.push({
         text,
         person: "Identifiable individual",

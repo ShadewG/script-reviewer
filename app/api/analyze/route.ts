@@ -93,6 +93,37 @@ const VideoFindingsSchema = z.array(
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
+function normalizeScriptForAnalysis(input: string): string {
+  const normalizedNewlines = input.replace(/\r\n?/g, "\n");
+  const lines = normalizedNewlines.split("\n");
+  const out: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      out.push("");
+      continue;
+    }
+
+    // Video transcripts can arrive as a single giant line. Split on sentence
+    // boundaries to preserve usable line-level references for downstream flags.
+    if (trimmed.length > 420) {
+      const chunks = trimmed
+        .split(/(?<=[.!?])\s+(?=[A-Z0-9"'])/g)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (chunks.length > 1) {
+        out.push(...chunks);
+        continue;
+      }
+    }
+
+    out.push(trimmed);
+  }
+
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.json();
   const {
@@ -133,6 +164,7 @@ export async function POST(req: NextRequest) {
   // Extract only the latest version if the doc contains multiple drafts
   if (script) {
     script = extractLatestVersion(script);
+    script = normalizeScriptForAnalysis(script);
   }
 
   if (!script || !state || !caseStatus) {
