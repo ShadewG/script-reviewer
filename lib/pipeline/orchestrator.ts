@@ -390,6 +390,51 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+function normalizeParsedScript(value: ParsedScript): ParsedScript {
+  return {
+    entities: Array.isArray(value.entities) ? value.entities : [],
+    profanity: Array.isArray(value.profanity) ? value.profanity : [],
+    graphicContent: Array.isArray(value.graphicContent) ? value.graphicContent : [],
+    claims: Array.isArray(value.claims) ? value.claims : [],
+    locations: asStringArray(value.locations),
+    dates: asStringArray(value.dates),
+    timeline: asStringArray(value.timeline),
+  };
+}
+
+function normalizeResearchFindings(value: ResearchFindings): ResearchFindings {
+  return {
+    caseStatus: typeof value.caseStatus === "string" ? value.caseStatus : "",
+    caseJurisdiction:
+      typeof value.caseJurisdiction === "string" ? value.caseJurisdiction : undefined,
+    caseNumbers: asStringArray(value.caseNumbers),
+    personProfiles: Array.isArray(value.personProfiles) ? value.personProfiles : [],
+    courtRecords: asStringArray(value.courtRecords),
+    keyCitations: asStringArray(value.keyCitations),
+  };
+}
+
+function normalizeFactCheckReport(value: FactCheckReport): FactCheckReport {
+  return {
+    summary: typeof value.summary === "string" ? value.summary : "",
+    findings: Array.isArray(value.findings) ? value.findings : [],
+  };
+}
+
+function normalizePolicyFlagArray(value: unknown): PolicyFlag[] {
+  if (Array.isArray(value)) {
+    return value as PolicyFlag[];
+  }
+  if (
+    value &&
+    typeof value === "object" &&
+    Array.isArray((value as { flags?: unknown[] }).flags)
+  ) {
+    return (value as { flags: PolicyFlag[] }).flags;
+  }
+  return [];
+}
+
 async function runFactCheckStage(args: {
   reviewId: string;
   script: string;
@@ -411,7 +456,7 @@ async function runFactCheckStage(args: {
     return existing;
   }
 
-  const candidateClaims = selectClaimsForFactCheck(parsed);
+  const candidateClaims = selectClaimsForFactCheck(parsed, script);
   if (candidateClaims.length === 0) {
     return null;
   }
@@ -429,7 +474,9 @@ async function runFactCheckStage(args: {
   const initialPromptHash = hashPrompt(FACT_CHECK_SYSTEM, initialPrompt);
   const factCheckStart = Date.now();
   const initial = await callGPTMiniDetailed(FACT_CHECK_SYSTEM, initialPrompt);
-  let report = await parseJsonWithRepair<FactCheckReport>(initial.text);
+  let report = normalizeFactCheckReport(
+    await parseJsonWithRepair<FactCheckReport>(initial.text)
+  );
   await recordStageLog({
     reviewId,
     stage: "fact_check",
@@ -478,7 +525,9 @@ async function runFactCheckStage(args: {
     const finalPromptHash = hashPrompt(FACT_CHECK_SYSTEM, finalPrompt);
     const finalStart = Date.now();
     const finalResult = await callGPTMiniDetailed(FACT_CHECK_SYSTEM, finalPrompt);
-    report = await parseJsonWithRepair<FactCheckReport>(finalResult.text);
+    report = normalizeFactCheckReport(
+      await parseJsonWithRepair<FactCheckReport>(finalResult.text)
+    );
     await recordStageLog({
       reviewId,
       stage: "fact_check_finalize",
@@ -550,7 +599,7 @@ export async function runPipeline(
   // --- Stage 0: Parse ---
   let parsed: ParsedScript;
   if (isParsedScript(review.parsedEntities)) {
-    parsed = review.parsedEntities;
+    parsed = normalizeParsedScript(review.parsedEntities);
     emit({ stage: 0, name: "Script Parser", status: "complete", data: parsed });
   } else {
     emit({ stage: 0, name: "Script Parser", status: "running" });
@@ -559,7 +608,9 @@ export async function runPipeline(
       const promptHash = hashPrompt(PARSER_SYSTEM, parserPrompt);
       const startedAt = Date.now();
       const parseResult = await callGPTMiniDetailed(PARSER_SYSTEM, parserPrompt);
-      parsed = await parseJsonWithRepair<ParsedScript>(parseResult.text);
+      parsed = normalizeParsedScript(
+        await parseJsonWithRepair<ParsedScript>(parseResult.text)
+      );
       await prisma.review.update({
         where: { id: reviewId },
         data: { parsedEntities: parsed as never },
@@ -588,13 +639,13 @@ export async function runPipeline(
   }
 
   const persistedPolicyFlags = Array.isArray(review.youtubeFlags)
-    ? (review.youtubeFlags as unknown as PolicyFlag[])
+    ? normalizePolicyFlagArray(review.youtubeFlags)
     : null;
   const persistedResearch = isResearchFindings(review.researchData)
-    ? (review.researchData as unknown as ResearchFindings)
+    ? normalizeResearchFindings(review.researchData as unknown as ResearchFindings)
     : null;
   const persistedFactCheck = isFactCheckReport(review.factCheckData)
-    ? (review.factCheckData as unknown as FactCheckReport)
+    ? normalizeFactCheckReport(review.factCheckData as unknown as FactCheckReport)
     : null;
   const persistedLegalFlags = Array.isArray(review.legalFlags)
     ? (review.legalFlags as unknown as LegalFlag[])
@@ -612,7 +663,9 @@ export async function runPipeline(
     const promptHash = hashPrompt(YOUTUBE_SYSTEM, prompt);
     const startedAt = Date.now();
     const ytResult = await callGPTDetailed(YOUTUBE_SYSTEM, prompt);
-    const rawFlags = await parseJsonWithRepair<PolicyFlag[]>(ytResult.text);
+    const rawFlags = normalizePolicyFlagArray(
+      await parseJsonWithRepair<unknown>(ytResult.text)
+    );
     const finalFlags = dedupePolicyFlags(
       mergePolicyFlags(
         mergePolicyFlags(rawFlags, heuristicPolicyFlags(script)),
@@ -723,7 +776,9 @@ export async function runPipeline(
     const promptHash = hashPrompt(RESEARCH_SYNTHESIS_SYSTEM, synthPrompt);
     const startedAt = Date.now();
     const synthResult = await callGPTDetailed(RESEARCH_SYNTHESIS_SYSTEM, synthPrompt);
-    const findings = await parseJsonWithRepair<ResearchFindings>(synthResult.text);
+    const findings = normalizeResearchFindings(
+      await parseJsonWithRepair<ResearchFindings>(synthResult.text)
+    );
     await prisma.review.update({
       where: { id: reviewId },
       data: { researchData: findings as never },

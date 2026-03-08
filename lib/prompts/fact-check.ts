@@ -12,6 +12,33 @@ Be conservative. Only mark a claim as contradicted when the provided materials c
 Use the uploaded documents first. Use research second. If the provided materials are insufficient, mark the claim as needs_external_verification or unclear.
 Return ONLY valid JSON.`;
 
+function scoreClaimText(text: string): number {
+  let score = 0;
+  if (/\b(first-degree|second-degree|life in prison|sentenced|convicted|appeal|charges?|trial)\b/.test(text)) score += 4;
+  if (/\b(serial offender|serial killer|dozens of victims|decades-long|graveyard|cover-up|motive)\b/.test(text)) score += 4;
+  if (/\b(california|virginia|north carolina|county|circuit court|district court)\b/.test(text)) score += 3;
+  if (/\b\d{4}\b/.test(text) || /\b\d+\b/.test(text)) score += 2;
+  if (text.length > 90) score += 1;
+  return score;
+}
+
+function selectClaimsFromScript(
+  script: string
+): Array<{ line: number; claim: string; score: number }> {
+  return script
+    .split("\n")
+    .map((rawLine, idx) => ({
+      line: idx + 1,
+      claim: rawLine.trim(),
+    }))
+    .filter((item) => item.claim.length >= 40)
+    .map((item) => ({
+      ...item,
+      score: scoreClaimText(item.claim.toLowerCase()),
+    }))
+    .filter((item) => item.score > 0);
+}
+
 function buildDocsSection(documentFacts: DocumentFacts[] | undefined): string {
   if (!documentFacts || documentFacts.length === 0) return "No uploaded source documents provided.";
   return documentFacts
@@ -36,24 +63,26 @@ function buildDocsSection(documentFacts: DocumentFacts[] | undefined): string {
     .join("\n\n");
 }
 
-export function selectClaimsForFactCheck(parsed: ParsedScript): Array<{ line: number; claim: string }> {
-  const scored = parsed.claims
-    .filter((claim) => claim.type === "fact" || claim.type === "attributed")
-    .map((claim) => {
-      const text = claim.text.toLowerCase();
-      let score = 0;
-      if (/\b(first-degree|second-degree|life in prison|sentenced|convicted|appeal|charges?|trial)\b/.test(text)) score += 4;
-      if (/\b(serial offender|serial killer|dozens of victims|decades-long|graveyard|cover-up|motive)\b/.test(text)) score += 4;
-      if (/\b(california|virginia|north carolina|county|circuit court|district court)\b/.test(text)) score += 3;
-      if (/\b\d{4}\b/.test(text) || /\b\d+\b/.test(text)) score += 2;
-      if (text.length > 90) score += 1;
-      return {
-        line: claim.line,
-        claim: claim.text,
-        score,
-      };
-    })
-    .sort((a, b) => b.score - a.score || a.line - b.line);
+export function selectClaimsForFactCheck(
+  parsed: ParsedScript,
+  script?: string
+): Array<{ line: number; claim: string }> {
+  const parsedClaims = Array.isArray(parsed.claims)
+    ? parsed.claims
+        .filter((claim) => claim.type === "fact" || claim.type === "attributed")
+        .map((claim) => ({
+          line: claim.line,
+          claim: claim.text,
+          score: scoreClaimText(claim.text.toLowerCase()),
+        }))
+    : [];
+
+  const scored = (parsedClaims.length > 0
+    ? parsedClaims
+    : script
+      ? selectClaimsFromScript(script)
+      : []
+  ).sort((a, b) => b.score - a.score || a.line - b.line);
 
   const seen = new Set<string>();
   const selected: Array<{ line: number; claim: string }> = [];
