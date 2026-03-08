@@ -389,7 +389,7 @@ export default function AnnotatedScriptView({
   return (
     <div className="flex gap-4">
       {/* Script Column */}
-      <div className="flex-1 flex">
+      <div className="flex-1 flex min-w-0">
         <div
           ref={scriptContainerRef}
           className="flex-1 overflow-auto max-h-[700px] border border-[var(--border)] bg-[var(--bg-surface)]"
@@ -568,8 +568,8 @@ export default function AnnotatedScriptView({
         </div>
       </div>
 
-      {/* Legend + Navigation */}
-      <div className="w-48 flex-shrink-0">
+      {/* Legend + Navigation — hidden on mobile */}
+      <div className="w-48 flex-shrink-0 hidden md:block">
         <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 sticky top-4">
           {/* Flag navigation */}
           {flaggedLineNumbers.length > 0 && (

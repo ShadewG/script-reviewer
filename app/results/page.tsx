@@ -7,6 +7,12 @@ import type { DocumentFacts } from "@/lib/documents/types";
 import AnnotatedScriptView from "./components/AnnotatedScriptView";
 import type { VideoFrameFinding } from "@/lib/pipeline/types";
 import { YT_POLICIES } from "@/lib/policies/youtube-policies";
+import { useTheme } from "@/lib/theme";
+import { useDismissedFlags, flagKey, DISMISS_REASONS, type DismissReason } from "@/lib/dismissed-flags";
+import { useKeyboardNav, KeyboardHelpOverlay } from "@/lib/keyboard-nav";
+import { generateDisclaimers } from "@/lib/disclaimer-generator";
+import GlossaryTerm from "@/components/GlossaryTerm";
+import { findGlossaryTerms } from "@/lib/legal-glossary";
 
 /* ── Label formatting ── */
 function formatLabel(s: string): string {
@@ -532,6 +538,35 @@ function extractVideoTimecode(text: string): string | null {
   return m ? m[1] : null;
 }
 
+function renderWithGlossary(text: string): React.ReactNode {
+  const matches = findGlossaryTerms(text);
+  if (matches.length === 0) return text;
+  const seen = new Set<string>();
+  const uniqueMatches = matches.filter((m) => {
+    const key = m.term.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  for (const match of uniqueMatches) {
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+    parts.push(
+      <GlossaryTerm key={match.index} term={match.term}>
+        {text.slice(match.index, match.index + match.length)}
+      </GlossaryTerm>
+    );
+    lastIndex = match.index + match.length;
+  }
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+  return parts;
+}
+
 type TabKey = "overview" | "video" | "script" | "legal" | "youtube" | "research" | "raw";
 
 function ResultsContent() {
@@ -541,13 +576,17 @@ function ResultsContent() {
   const [data, setData] = useState<ReviewData | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
-  const [copied, setCopied] = useState<"report" | "link" | null>(null);
+  const [copied, setCopied] = useState<"report" | "link" | "disclaimer" | null>(null);
   const [expandedDocs, setExpandedDocs] = useState<Set<number>>(new Set());
   const [expandedVideoSet, setExpandedVideoSet] = useState<Set<number>>(new Set());
   const [minSeverity, setMinSeverity] = useState<Severity>("low");
   const [flagFilter, setFlagFilter] = useState<"all" | "legal" | "policy">("all");
   const [expandedYtFlags, setExpandedYtFlags] = useState<Set<string>>(new Set());
   const [summaryExpanded, setSummaryExpanded] = useState(false);
+  const [showDismissed, setShowDismissed] = useState(false);
+  const [dismissingKey, setDismissingKey] = useState<string | null>(null);
+  const [showDisclaimers, setShowDisclaimers] = useState(false);
+  const { theme, toggle: toggleTheme } = useTheme();
 
   useEffect(() => {
     if (!id) return;
@@ -559,6 +598,9 @@ function ResultsContent() {
       .then((d) => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
   }, [id]);
+
+  /* ── Dismissed flags ── */
+  const { isDismissed, getDismissal, dismiss, restore, dismissedCount } = useDismissedFlags(id ?? "");
 
   /* ── Derived data (stable references via useMemo) ── */
   const report = data?.synthesis ?? null;
@@ -657,6 +699,45 @@ function ResultsContent() {
     script: allLegalFlags.length + allPolicyFlags.length,
   }), [groupedVideoTimeline.length, filteredLegalFlags.length, filteredPolicyFlags.length, allLegalFlags.length, allPolicyFlags.length]);
 
+  /* Disclaimers */
+  const disclaimers = useMemo(
+    () => data ? generateDisclaimers(report, allLegalFlags, allPolicyFlags, data.hasMinors) : [],
+    [data, report, allLegalFlags, allPolicyFlags]
+  );
+
+  /* Keyboard nav — item count depends on active tab */
+  const navItemCount = useMemo(() => {
+    if (activeTab === "legal") return filteredLegalFlags.length;
+    if (activeTab === "youtube") return filteredPolicyFlags.length;
+    if (activeTab === "video") return groupedVideoTimeline.length;
+    return 0;
+  }, [activeTab, filteredLegalFlags.length, filteredPolicyFlags.length, groupedVideoTimeline.length]);
+
+  const {
+    activeIndex: navActiveIndex,
+    showHelp: navShowHelp,
+    setShowHelp: setNavShowHelp,
+    containerRef: navContainerRef,
+  } = useKeyboardNav({
+    itemCount: navItemCount,
+    enabled: activeTab === "legal" || activeTab === "youtube" || activeTab === "video",
+    onExpand: (idx) => {
+      if (activeTab === "video") toggleVideoExpand(idx);
+    },
+    onDismiss: (idx) => {
+      if (activeTab === "legal" && filteredLegalFlags[idx]) {
+        const f = filteredLegalFlags[idx];
+        const key = flagKey("legal", f.line, f.text);
+        if (!isDismissed(key)) setDismissingKey(key);
+      }
+      if (activeTab === "youtube" && filteredPolicyFlags[idx]) {
+        const f = filteredPolicyFlags[idx];
+        const key = flagKey("policy", f.line, f.text);
+        if (!isDismissed(key)) setDismissingKey(key);
+      }
+    },
+  });
+
   /* Severity filter helpers */
   const hiddenCount =
     activeTab === "legal" ? allLegalFlags.length - filteredLegalFlags.length :
@@ -722,30 +803,39 @@ function ResultsContent() {
             )}
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap justify-end" data-no-print>
+          <button
+            onClick={() => window.print()}
+            className="text-xs uppercase tracking-wider border border-[var(--border)] px-3 py-2 hover:bg-[var(--bg-elevated)]"
+          >
+            Print / PDF
+          </button>
           <button
             onClick={() => {
               navigator.clipboard.writeText(formatReportText(data));
               setCopied("report");
               setTimeout(() => setCopied(null), 2000);
             }}
-            className="text-xs uppercase tracking-wider border border-[var(--border)] px-4 py-2 hover:bg-[var(--bg-elevated)]"
+            className="text-xs uppercase tracking-wider border border-[var(--border)] px-3 py-2 hover:bg-[var(--bg-elevated)]"
           >
             {copied === "report" ? "COPIED" : "Copy Report"}
           </button>
           <button
-            onClick={() => {
-              navigator.clipboard.writeText(window.location.href);
-              setCopied("link");
-              setTimeout(() => setCopied(null), 2000);
-            }}
-            className="text-xs uppercase tracking-wider border border-[var(--border)] px-4 py-2 hover:bg-[var(--bg-elevated)]"
+            onClick={() => router.push("/reviews")}
+            className="text-xs uppercase tracking-wider border border-[var(--border)] px-3 py-2 hover:bg-[var(--bg-elevated)]"
           >
-            {copied === "link" ? "COPIED" : "Copy Link"}
+            History
+          </button>
+          <button
+            onClick={toggleTheme}
+            className="text-xs uppercase tracking-wider border border-[var(--border)] px-3 py-2 hover:bg-[var(--bg-elevated)]"
+            aria-label="Toggle theme"
+          >
+            {theme === "dark" ? "SUN" : "MOON"}
           </button>
           <button
             onClick={() => router.push("/")}
-            className="text-xs uppercase tracking-wider border border-[var(--border)] px-4 py-2 hover:bg-[var(--bg-elevated)]"
+            className="text-xs uppercase tracking-wider border border-[var(--border)] px-3 py-2 hover:bg-[var(--bg-elevated)]"
           >
             New Analysis
           </button>
@@ -820,7 +910,7 @@ function ResultsContent() {
 
       {/* Risk Dashboard */}
       {report?.riskDashboard && (
-        <div className="grid grid-cols-5 gap-2 mb-6">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2 mb-6">
           {Object.entries(report.riskDashboard).map(([key, val]) => (
             <div key={key} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 text-center">
               <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-2">
@@ -838,8 +928,8 @@ function ResultsContent() {
       )}
 
       {/* Tabs + Severity Filter — sticky container */}
-      <div className="sticky top-0 z-20 bg-[var(--bg)]">
-      <div className="flex gap-0 border-b border-[var(--border)] mb-0">
+      <div className="sticky top-0 z-20 bg-[var(--bg)]" data-no-print>
+      <div className="flex gap-0 border-b border-[var(--border)] mb-0 overflow-x-auto">
         {(["overview", "video", "script", "legal", "youtube", "research", "raw"] as const).map((tab) => {
           const count = tabCounts[tab];
           return (
@@ -1067,6 +1157,42 @@ function ResultsContent() {
                 </div>
               </section>
             )}
+
+            {/* Disclaimer Generator */}
+            <section>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs uppercase tracking-wider text-[var(--text-dim)] flex items-center gap-2">
+                  <span className="w-2 h-2 bg-[var(--text-dim)]" /> Suggested Disclaimers
+                </h3>
+                <button
+                  onClick={() => setShowDisclaimers(!showDisclaimers)}
+                  className="text-[10px] uppercase tracking-wider px-2 py-1 border border-[var(--border)] hover:bg-[var(--bg-elevated)] text-[var(--text-dim)]"
+                  data-no-print
+                >
+                  {showDisclaimers ? "Hide" : "Generate"}
+                </button>
+              </div>
+              {showDisclaimers && (
+                <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-4 space-y-3">
+                  {disclaimers.map((d, i) => (
+                    <p key={i} className="text-sm text-[var(--text)] leading-relaxed">
+                      {d}
+                    </p>
+                  ))}
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(disclaimers.join("\n\n"));
+                      setCopied("disclaimer");
+                      setTimeout(() => setCopied(null), 2000);
+                    }}
+                    className="text-[10px] uppercase tracking-wider px-3 py-1 border border-[var(--border)] hover:bg-[var(--bg-elevated)] text-[var(--text-dim)]"
+                    data-no-print
+                  >
+                    {copied === "disclaimer" ? "COPIED" : "COPY ALL"}
+                  </button>
+                </div>
+              )}
+            </section>
 
             {report.edsaChecklist?.length > 0 && (
               <section>
@@ -1314,7 +1440,7 @@ function ResultsContent() {
         )}
 
         {activeTab === "legal" && (
-          <div className="space-y-2">
+          <div className="space-y-2" ref={navContainerRef}>
             {/* Cross-validation summary */}
             {data.legalCrossValidation && (
               <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 mb-4">
@@ -1334,6 +1460,18 @@ function ResultsContent() {
               </div>
             )}
 
+            {/* Dismissed toggle */}
+            {dismissedCount > 0 && (
+              <div className="flex items-center gap-2 mb-2" data-no-print>
+                <button
+                  onClick={() => setShowDismissed(!showDismissed)}
+                  className="text-[10px] text-[var(--text-dim)] hover:text-[var(--text)] underline"
+                >
+                  {showDismissed ? "Hide" : "Show"} {dismissedCount} dismissed
+                </button>
+              </div>
+            )}
+
             {filteredLegalFlags.length === 0 ? (
               <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-8 text-center">
                 <p className="text-xs text-[var(--text-dim)]">
@@ -1348,16 +1486,29 @@ function ResultsContent() {
                   models: string[];
                   originalSeverities: Record<string, string>;
                 }) : null;
+                const fKey = flagKey("legal", flag.line, flag.text);
+                const dismissed = isDismissed(fKey);
+                const dismissal = getDismissal(fKey);
+
+                if (dismissed && !showDismissed) return null;
 
                 return (
-                  <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+                  <div
+                    key={i}
+                    data-nav-item
+                    className={`border bg-[var(--bg-surface)] p-3 transition-colors ${
+                      dismissed ? "opacity-50 line-through" : ""
+                    } ${
+                      navActiveIndex === i ? "border-[var(--text-bright)] ring-1 ring-[var(--text-bright)]" : "border-[var(--border)]"
+                    }`}
+                  >
                     <div className="flex items-center gap-2 mb-2 flex-wrap">
                       <span className="w-2 h-2" style={{ background: sevColor(flag.severity) }} />
                       <span className="text-xs uppercase" style={{ color: sevColor(flag.severity) }}>
                         {flag.severity}
                       </span>
                       <span className="text-[10px] text-[var(--text-dim)] uppercase">
-                        {formatLabel(flag.riskType)}
+                        <GlossaryTerm term={flag.riskType.replace(/_/g, " ")}>{formatLabel(flag.riskType)}</GlossaryTerm>
                       </span>
                       <span className="text-[10px] text-[var(--text-dim)]">
                         — {flag.person}
@@ -1384,12 +1535,12 @@ function ResultsContent() {
                         </span>
                       )}
                     </div>
-                    <div className="text-sm text-[var(--text)] mb-1.5 leading-relaxed">&quot;{flag.text}&quot;</div>
-                    <div className="text-sm text-[var(--text-dim)] mb-1.5 whitespace-pre-wrap leading-relaxed">{flag.reasoning}</div>
+                    <div className="text-sm text-[var(--text)] mb-1.5 leading-relaxed no-underline" style={{ textDecoration: "none" }}>&quot;{flag.text}&quot;</div>
+                    <div className="text-sm text-[var(--text-dim)] mb-1.5 whitespace-pre-wrap leading-relaxed no-underline" style={{ textDecoration: "none" }}>{renderWithGlossary(flag.reasoning)}</div>
                     {flag.stateCitation && (
                       <div className="text-xs text-[var(--text-dim)]">Cite: {flag.stateCitation}</div>
                     )}
-                    <div className="text-sm text-[var(--green)] mt-2 border border-[var(--border)] bg-[var(--bg)] p-2">Safer: {flag.saferRewrite}</div>
+                    <div className="text-sm text-[var(--green)] mt-2 border border-[var(--border)] bg-[var(--bg)] p-2 no-underline" style={{ textDecoration: "none" }}>Safer: {flag.saferRewrite}</div>
                     {cv && (
                       <div className="mt-2 pt-2 border-t border-[var(--border)]">
                         <div className="text-[10px] text-[var(--text-dim)] uppercase mb-1">Per-Model Severity</div>
@@ -1405,6 +1556,47 @@ function ResultsContent() {
                         </div>
                       </div>
                     )}
+                    {/* Dismiss / Restore controls */}
+                    <div className="mt-2 pt-2 border-t border-[var(--border)] flex items-center gap-2" data-no-print>
+                      {dismissed ? (
+                        <>
+                          <span className="text-[10px] text-[var(--text-dim)]">
+                            Dismissed: {dismissal?.reason}
+                          </span>
+                          <button
+                            onClick={() => restore(fKey)}
+                            className="text-[10px] text-[var(--amber)] hover:text-[var(--yellow)] underline ml-auto"
+                          >
+                            Restore
+                          </button>
+                        </>
+                      ) : dismissingKey === fKey ? (
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {DISMISS_REASONS.map((reason) => (
+                            <button
+                              key={reason}
+                              onClick={() => { dismiss(fKey, reason); setDismissingKey(null); }}
+                              className="text-[10px] px-2 py-1 border border-[var(--border)] hover:bg-[var(--bg-elevated)] text-[var(--text-dim)]"
+                            >
+                              {reason}
+                            </button>
+                          ))}
+                          <button
+                            onClick={() => setDismissingKey(null)}
+                            className="text-[10px] text-[var(--text-dim)] hover:text-[var(--text)] ml-1"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setDismissingKey(fKey)}
+                          className="text-[10px] text-[var(--text-dim)] hover:text-[var(--text)] underline"
+                        >
+                          Dismiss
+                        </button>
+                      )}
+                    </div>
                   </div>
                 );
               })
@@ -1413,7 +1605,7 @@ function ResultsContent() {
         )}
 
         {activeTab === "youtube" && (
-          <div className="space-y-2">
+          <div className="space-y-2" ref={activeTab === "youtube" ? navContainerRef : undefined}>
             {/* Policies Triggered strip */}
             <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 mb-3">
               <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-2">
@@ -1459,8 +1651,22 @@ function ResultsContent() {
                 const displayText = isLong && !isExpanded
                   ? smartExcerpt(flag.text, 300, flag.line)
                   : flag.text;
+                const fKey = flagKey("policy", flag.line, flag.text);
+                const dismissed = isDismissed(fKey);
+                const dismissal = getDismissal(fKey);
+
+                if (dismissed && !showDismissed) return null;
+
                 return (
-                  <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+                  <div
+                    key={i}
+                    data-nav-item
+                    className={`border bg-[var(--bg-surface)] p-3 transition-colors ${
+                      dismissed ? "opacity-50 line-through" : ""
+                    } ${
+                      navActiveIndex === i ? "border-[var(--text-bright)] ring-1 ring-[var(--text-bright)]" : "border-[var(--border)]"
+                    }`}
+                  >
                     <div className="flex items-center gap-2 mb-2 flex-wrap">
                       <span className="w-2 h-2" style={{ background: sevColor(flag.severity) }} />
                       <span className="text-xs uppercase" style={{ color: sevColor(flag.severity) }}>
@@ -1484,7 +1690,7 @@ function ResultsContent() {
                         {flag.impact.replaceAll("_", " ")}
                       </span>
                     </div>
-                    <div className="text-sm text-[var(--text)] mb-1.5 leading-relaxed">
+                    <div className="text-sm text-[var(--text)] mb-1.5 leading-relaxed" style={{ textDecoration: "none" }}>
                       &quot;{displayText}&quot;
                       {isLong && (
                         <button
@@ -1499,13 +1705,56 @@ function ResultsContent() {
                         </button>
                       )}
                     </div>
-                    <div className="text-sm text-[var(--text-dim)] mb-1.5 whitespace-pre-wrap leading-relaxed">{flag.reasoning}</div>
+                    <div className="text-sm text-[var(--text-dim)] mb-1.5 whitespace-pre-wrap leading-relaxed" style={{ textDecoration: "none" }}>{flag.reasoning}</div>
                     {flag.policyQuote && (
-                      <div className="text-xs text-[var(--text-dim)] italic">Policy: {flag.policyQuote}</div>
+                      <div className="text-xs text-[var(--text-dim)] italic" style={{ textDecoration: "none" }}>Policy: {flag.policyQuote}</div>
                     )}
                     {flag.saferRewrite && (
-                      <div className="text-sm text-[var(--green)] mt-2 border border-[var(--border)] bg-[var(--bg)] p-2">Safer: {flag.saferRewrite}</div>
+                      <div className="text-sm text-[var(--green)] mt-2 border border-[var(--border)] bg-[var(--bg)] p-2" style={{ textDecoration: "none" }}>Safer: {flag.saferRewrite}</div>
                     )}
+                    {/* Dismiss / Restore controls */}
+                    <div className="mt-2 pt-2 border-t border-[var(--border)] flex items-center gap-2" data-no-print>
+                      {dismissed ? (
+                        <>
+                          <span className="text-[10px] text-[var(--text-dim)]" style={{ textDecoration: "none" }}>
+                            Dismissed: {dismissal?.reason}
+                          </span>
+                          <button
+                            onClick={() => restore(fKey)}
+                            className="text-[10px] text-[var(--amber)] hover:text-[var(--yellow)] underline ml-auto"
+                            style={{ textDecoration: "underline" }}
+                          >
+                            Restore
+                          </button>
+                        </>
+                      ) : dismissingKey === fKey ? (
+                        <div className="flex items-center gap-2 flex-wrap" style={{ textDecoration: "none" }}>
+                          {DISMISS_REASONS.map((reason) => (
+                            <button
+                              key={reason}
+                              onClick={() => { dismiss(fKey, reason); setDismissingKey(null); }}
+                              className="text-[10px] px-2 py-1 border border-[var(--border)] hover:bg-[var(--bg-elevated)] text-[var(--text-dim)]"
+                            >
+                              {reason}
+                            </button>
+                          ))}
+                          <button
+                            onClick={() => setDismissingKey(null)}
+                            className="text-[10px] text-[var(--text-dim)] hover:text-[var(--text)] ml-1"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setDismissingKey(fKey)}
+                          className="text-[10px] text-[var(--text-dim)] hover:text-[var(--text)] underline"
+                          style={{ textDecoration: "underline" }}
+                        >
+                          Dismiss
+                        </button>
+                      )}
+                    </div>
                   </div>
                 );
               })
@@ -1516,21 +1765,116 @@ function ResultsContent() {
         {activeTab === "research" && (
           <div className="space-y-4">
             {data.researchData ? (
-              <div className="space-y-3">
-                {Object.entries(data.researchData).map(([key, val]) => (
-                  <div key={key} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
-                    <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-2">
-                      {formatLabel(key)}
+              <div className="space-y-4">
+                {/* Person Profiles */}
+                {Array.isArray((data.researchData as Record<string, unknown>).personProfiles) && (
+                  <section>
+                    <h3 className="text-xs uppercase tracking-wider text-[var(--text-dim)] mb-3 flex items-center gap-2">
+                      <span className="w-2 h-2 bg-[var(--text-dim)]" /> Person Profiles
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {((data.researchData as Record<string, unknown>).personProfiles as Array<Record<string, string | boolean | null>>).map((person, i) => (
+                        <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+                          <div className="flex items-center gap-2 mb-2 flex-wrap">
+                            <span className="text-sm text-[var(--text-bright)] font-medium">
+                              {String(person.name ?? "Unknown")}
+                            </span>
+                            {Boolean(person.isPublicFigure) && (
+                              <span className="text-[10px] text-[var(--amber)] border border-[var(--amber)] px-1.5 py-0.5">
+                                PUBLIC FIGURE
+                              </span>
+                            )}
+                            {Boolean(person.isDeceased) && (
+                              <span className="text-[10px] text-[var(--text-dim)] border border-[var(--border)] px-1.5 py-0.5">
+                                DECEASED
+                              </span>
+                            )}
+                          </div>
+                          {person.publicFigureReason && (
+                            <p className="text-xs text-[var(--text-dim)] mb-1">{String(person.publicFigureReason)}</p>
+                          )}
+                          {person.caseStatus && (
+                            <p className="text-xs text-[var(--text)]">Status: {String(person.caseStatus)}</p>
+                          )}
+                          {person.newsCoverage && (
+                            <p className="text-xs text-[var(--text-dim)] mt-1">Coverage: {String(person.newsCoverage)}</p>
+                          )}
+                        </div>
+                      ))}
                     </div>
-                    {typeof val === "string" ? (
-                      <p className="text-sm text-[var(--text)] whitespace-pre-wrap leading-relaxed">{val}</p>
-                    ) : (
-                      <pre className="text-xs text-[var(--text)] overflow-auto max-h-[400px] whitespace-pre-wrap">
-                        {JSON.stringify(val, null, 2)}
-                      </pre>
-                    )}
-                  </div>
-                ))}
+                  </section>
+                )}
+
+                {/* Key Citations */}
+                {Array.isArray((data.researchData as Record<string, unknown>).keyCitations) && (
+                  <section>
+                    <h3 className="text-xs uppercase tracking-wider text-[var(--text-dim)] mb-3 flex items-center gap-2">
+                      <span className="w-2 h-2 bg-[var(--text-dim)]" /> Key Citations
+                    </h3>
+                    <div className="space-y-2">
+                      {((data.researchData as Record<string, unknown>).keyCitations as Array<Record<string, string | null>>).map((citation, i) => {
+                        const urlStr = String(citation.url ?? citation.source ?? "");
+                        const isUrl = urlStr.startsWith("http://") || urlStr.startsWith("https://");
+                        return (
+                          <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+                            <div className="text-sm text-[var(--text)]">
+                              {String(citation.title ?? citation.description ?? citation.text ?? JSON.stringify(citation))}
+                            </div>
+                            {isUrl && (
+                              <a
+                                href={urlStr}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-xs text-[var(--text-dim)] hover:text-[var(--text)] underline break-all mt-1 block"
+                              >
+                                {urlStr}
+                              </a>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                )}
+
+                {/* Court Records */}
+                {Array.isArray((data.researchData as Record<string, unknown>).courtRecords) && (
+                  <section>
+                    <h3 className="text-xs uppercase tracking-wider text-[var(--text-dim)] mb-3 flex items-center gap-2">
+                      <span className="w-2 h-2 bg-[var(--text-dim)]" /> Court Records
+                    </h3>
+                    <div className="space-y-2">
+                      {((data.researchData as Record<string, unknown>).courtRecords as Array<Record<string, string | null>>).map((record, i) => (
+                        <details key={i} className="border border-[var(--border)] bg-[var(--bg-surface)]">
+                          <summary className="list-none cursor-pointer px-3 py-2 flex items-center gap-3 hover:bg-[var(--bg-elevated)] text-sm text-[var(--text)]">
+                            {String(record.caseName ?? record.title ?? record.caseNumber ?? `Record ${i + 1}`)}
+                          </summary>
+                          <pre className="text-xs text-[var(--text-dim)] px-3 pb-3 whitespace-pre-wrap overflow-auto max-h-[300px]">
+                            {JSON.stringify(record, null, 2)}
+                          </pre>
+                        </details>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                {/* Fallback: render remaining keys as before */}
+                {Object.entries(data.researchData)
+                  .filter(([key]) => !["personProfiles", "keyCitations", "courtRecords"].includes(key))
+                  .map(([key, val]) => (
+                    <div key={key} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+                      <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-2">
+                        {formatLabel(key)}
+                      </div>
+                      {typeof val === "string" ? (
+                        <p className="text-sm text-[var(--text)] whitespace-pre-wrap leading-relaxed">{val}</p>
+                      ) : (
+                        <pre className="text-xs text-[var(--text)] overflow-auto max-h-[400px] whitespace-pre-wrap">
+                          {JSON.stringify(val, null, 2)}
+                        </pre>
+                      )}
+                    </div>
+                  ))}
               </div>
             ) : (
               <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-8 text-center">
@@ -1550,6 +1894,9 @@ function ResultsContent() {
           </pre>
         )}
       </div>
+
+      {/* Keyboard shortcuts overlay */}
+      {navShowHelp && <KeyboardHelpOverlay onClose={() => setNavShowHelp(false)} />}
     </div>
   );
 }

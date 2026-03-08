@@ -4,6 +4,7 @@ import { useState, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import type { DocumentFacts } from "@/lib/documents/types";
 import type { VideoFrameFinding } from "@/lib/pipeline/types";
+import { useTheme } from "@/lib/theme";
 
 const US_STATES = [
   "Alabama","Alaska","Arizona","Arkansas","California","Colorado","Connecticut",
@@ -124,8 +125,11 @@ function hasHardSignal(
   );
 }
 
+const STAGE_ESTIMATES: Record<number, number> = { 0: 5, 1: 20, 2: 10, 3: 25, 4: 15 };
+
 export default function Home() {
   const router = useRouter();
+  const { theme, toggle: toggleTheme } = useTheme();
   const [inputMode, setInputMode] = useState<"paste" | "gdoc">("paste");
   const [script, setScript] = useState("");
   const [gdocUrl, setGdocUrl] = useState("");
@@ -156,6 +160,7 @@ export default function Home() {
   const [stages, setStages] = useState<StageStatus[]>([]);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const stageStartTimes = useRef<Record<number, number>>({});
 
   const toggleFootage = (type: string) => {
     setFootageTypes((prev) =>
@@ -579,6 +584,9 @@ export default function Home() {
             const data = JSON.parse(line.slice(6));
 
             if (data.type === "stage") {
+              if (data.status === "running") {
+                stageStartTimes.current[data.stage] = Date.now();
+              }
               setStages((prev) =>
                 prev.map((s) =>
                   s.stage === data.stage
@@ -613,21 +621,38 @@ export default function Home() {
 
   return (
     <div className="min-h-screen p-4 max-w-5xl mx-auto">
-      <header className="border-b border-[var(--border)] pb-4 mb-6">
-        <div className="flex items-center gap-3">
-          <div className="w-2 h-2 bg-[var(--green)]" />
-          <h1 className="text-lg tracking-widest text-[var(--text-bright)] uppercase">
-            Script Shield
-          </h1>
+      <header className="border-b border-[var(--border)] pb-4 mb-6 flex justify-between items-start">
+        <div>
+          <div className="flex items-center gap-3">
+            <div className="w-2 h-2 bg-[var(--green)]" />
+            <h1 className="text-lg tracking-widest text-[var(--text-bright)] uppercase">
+              Script Shield
+            </h1>
+          </div>
+          <p className="text-xs text-[var(--text-dim)] mt-1 tracking-wide">
+            TRUE CRIME SCRIPT REVIEW // LEGAL RISK + YOUTUBE POLICY COMPLIANCE
+          </p>
         </div>
-        <p className="text-xs text-[var(--text-dim)] mt-1 tracking-wide">
-          TRUE CRIME SCRIPT REVIEW // LEGAL RISK + YOUTUBE POLICY COMPLIANCE
-        </p>
+        <div className="flex gap-2" data-no-print>
+          <button
+            onClick={() => router.push("/reviews")}
+            className="text-xs uppercase tracking-wider border border-[var(--border)] px-4 py-2 hover:bg-[var(--bg-elevated)]"
+          >
+            History
+          </button>
+          <button
+            onClick={toggleTheme}
+            className="text-xs uppercase tracking-wider border border-[var(--border)] px-4 py-2 hover:bg-[var(--bg-elevated)]"
+            aria-label="Toggle theme"
+          >
+            {theme === "dark" ? "SUN" : "MOON"}
+          </button>
+        </div>
       </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {/* Left: Script Input */}
-        <div className="lg:col-span-2">
+        <div className="md:col-span-2">
           {/* Input Mode Toggle */}
           <div className="flex items-center gap-0 mb-3">
             <button
@@ -964,38 +989,65 @@ export default function Home() {
           </button>
 
           {stages.length > 0 && (
-            <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 space-y-2">
-              <div className="text-xs text-[var(--text-dim)] uppercase tracking-wider mb-2">
+            <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 space-y-3">
+              <div className="text-xs text-[var(--text-dim)] uppercase tracking-wider mb-1">
                 Pipeline Status
               </div>
-              {stages.map((s) => (
-                <div key={s.stage} className="flex items-center gap-2 text-xs">
-                  <span
-                    className="w-2 h-2 flex-shrink-0"
-                    style={{
-                      background:
-                        s.status === "complete"
-                          ? "var(--green)"
-                          : s.status === "running"
-                          ? "var(--yellow)"
-                          : s.status === "error"
-                          ? "var(--red)"
-                          : "var(--border)",
-                    }}
-                  />
-                  <span className={s.status === "running" ? "text-[var(--text-bright)]" : ""}>
-                    {s.name}
-                  </span>
-                  {s.status === "running" && (
-                    <span className="text-[var(--yellow)] animate-pulse">...</span>
-                  )}
-                  {s.status === "error" && (
-                    <span className="text-[var(--red)] text-[10px] truncate max-w-[120px]">
-                      {s.error}
-                    </span>
-                  )}
-                </div>
-              ))}
+              {stages.map((s) => {
+                const estimate = STAGE_ESTIMATES[s.stage] ?? 10;
+                const startTime = stageStartTimes.current[s.stage];
+                const elapsed = s.status === "running" && startTime
+                  ? Math.floor((Date.now() - startTime) / 1000)
+                  : 0;
+                return (
+                  <div key={s.stage}>
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-2 text-xs">
+                        {s.status === "complete" && (
+                          <span className="text-[var(--green)] text-sm">&#10003;</span>
+                        )}
+                        {s.status === "error" && (
+                          <span className="text-[var(--red)] text-sm">&#10007;</span>
+                        )}
+                        {s.status === "pending" && (
+                          <span className="w-2 h-2 bg-[var(--border)]" />
+                        )}
+                        {s.status === "running" && (
+                          <span className="w-2 h-2 bg-[var(--amber)] progress-active" />
+                        )}
+                        <span className={s.status === "running" ? "text-[var(--text-bright)]" : ""}>
+                          {s.name}
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-[var(--text-dim)]">
+                        {s.status === "running" ? `~${estimate}s` : ""}
+                      </span>
+                    </div>
+                    <div className="w-full h-1.5 bg-[var(--bg)] overflow-hidden">
+                      <div
+                        className={`h-full transition-all duration-500 ${
+                          s.status === "running" ? "progress-active" : ""
+                        }`}
+                        style={{
+                          width:
+                            s.status === "complete" ? "100%" :
+                            s.status === "running" ? `${Math.min(90, (elapsed / estimate) * 100)}%` :
+                            s.status === "error" ? "100%" : "0%",
+                          background:
+                            s.status === "complete" ? "var(--green)" :
+                            s.status === "running" ? "var(--amber)" :
+                            s.status === "error" ? "var(--red)" : "transparent",
+                        }}
+                      />
+                    </div>
+                    {s.status === "error" && s.error && (
+                      <div className="text-[10px] text-[var(--red)] mt-0.5 truncate">
+                        {s.error}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
 

@@ -1,14 +1,26 @@
-import { callGPTMini, callGPT } from "../ai/openai";
-import { callClaude } from "../ai/anthropic";
-import { callSonar } from "../ai/perplexity";
+import {
+  callGPTMini,
+  callGPT,
+  callGPTMiniDetailed,
+  callGPTDetailed,
+} from "../ai/openai";
+import { callClaude, callClaudeDetailed } from "../ai/anthropic";
+import { callSonar, callSonarDetailed } from "../ai/perplexity";
+import { hashPrompt } from "../ai/shared";
 import { searchDockets } from "../ai/courtlistener";
 import { PARSER_SYSTEM, buildParserPrompt } from "../prompts/parser";
+import { LEGAL_SYSTEM, buildLegalPrompt } from "../prompts/legal-review";
 import { YOUTUBE_SYSTEM, buildYoutubePrompt } from "../prompts/youtube-policy";
 import {
   buildCaseResearchQueries,
   RESEARCH_SYNTHESIS_SYSTEM,
   buildResearchSynthesisPrompt,
 } from "../prompts/case-research";
+import {
+  FACT_CHECK_SYSTEM,
+  buildFactCheckPrompt,
+  selectClaimsForFactCheck,
+} from "../prompts/fact-check";
 import { SYNTHESIS_SYSTEM, buildSynthesisPrompt } from "../prompts/synthesis";
 import { runMultiModelLegalReview } from "./cross-validate";
 import {
@@ -18,12 +30,22 @@ import {
   videoFindingsToPolicyFlags,
 } from "./heuristics";
 import { prisma } from "../db";
+import {
+  appendReviewWarning,
+  buildResearchCacheKey,
+  getCachedResearch,
+  getResearchIdentity,
+  recordFailedAnalysis,
+  recordStageLog,
+  saveResearchCache,
+} from "./runtime";
 import type {
   CaseMetadata,
   ParsedScript,
   LegalFlag,
   PolicyFlag,
   ResearchFindings,
+  FactCheckReport,
   SynthesisReport,
   StageUpdate,
 } from "./types";
@@ -342,6 +364,146 @@ async function parseSynthesisResponse(text: string): Promise<SynthesisReport> {
   }
 }
 
+function isParsedScript(value: unknown): value is ParsedScript {
+  return !!value && typeof value === "object" && Array.isArray((value as ParsedScript).entities);
+}
+
+function isResearchFindings(value: unknown): value is ResearchFindings {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    Array.isArray((value as ResearchFindings).personProfiles) &&
+    Array.isArray((value as ResearchFindings).courtRecords)
+  );
+}
+
+function isFactCheckReport(value: unknown): value is FactCheckReport {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    Array.isArray((value as FactCheckReport).findings)
+  );
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+async function runFactCheckStage(args: {
+  reviewId: string;
+  script: string;
+  parsed: ParsedScript;
+  metadata: CaseMetadata;
+  research: ResearchFindings | null;
+  existing: FactCheckReport | null;
+  emit: (update: StageUpdate) => void;
+}): Promise<FactCheckReport | null> {
+  const { reviewId, script, parsed, metadata, research, existing, emit } = args;
+
+  if (existing && existing.findings.length > 0) {
+    emit({
+      stage: 3,
+      name: "Case Research + Fact Check",
+      status: "complete",
+      data: existing,
+    });
+    return existing;
+  }
+
+  const candidateClaims = selectClaimsForFactCheck(parsed);
+  if (candidateClaims.length === 0) {
+    return null;
+  }
+
+  emit({ stage: 3, name: "Case Research + Fact Check", status: "running" });
+
+  const initialPrompt = buildFactCheckPrompt({
+    script,
+    parsed,
+    metadata,
+    research,
+    documentFacts: metadata.documentFacts,
+    candidateClaims,
+  });
+  const initialPromptHash = hashPrompt(FACT_CHECK_SYSTEM, initialPrompt);
+  const factCheckStart = Date.now();
+  const initial = await callGPTMiniDetailed(FACT_CHECK_SYSTEM, initialPrompt);
+  let report = safeJsonParse<FactCheckReport>(initial.text);
+  await recordStageLog({
+    reviewId,
+    stage: "fact_check",
+    model: initial.model,
+    status: "complete",
+    durationMs: Date.now() - factCheckStart,
+    inputTokens: initial.usage?.inputTokens,
+    outputTokens: initial.usage?.outputTokens,
+    promptHash: initialPromptHash,
+    metadata: { candidateCount: candidateClaims.length },
+  });
+
+  const unresolved = report.findings
+    .filter((finding) => finding.verdict === "needs_external_verification")
+    .slice(0, 4);
+
+  if (unresolved.length > 0) {
+    const externalChecks: Array<{ claim: string; result: string }> = [];
+    for (const finding of unresolved) {
+      const externalPrompt = `Fact-check this claim for a ${metadata.state} criminal case and focus on public-record verifiable facts such as jurisdiction, conviction status, sentencing, appeals, and named-party involvement:\n\n${finding.claim}`;
+      const promptHash = hashPrompt("external_fact_check", externalPrompt);
+      const startedAt = Date.now();
+      const result = await callSonarDetailed(externalPrompt);
+      externalChecks.push({ claim: finding.claim, result: result.text });
+      await recordStageLog({
+        reviewId,
+        stage: "fact_check_external",
+        model: result.model,
+        status: "complete",
+        durationMs: Date.now() - startedAt,
+        inputTokens: result.usage?.inputTokens,
+        outputTokens: result.usage?.outputTokens,
+        promptHash,
+      });
+    }
+
+    const finalPrompt = buildFactCheckPrompt({
+      script,
+      parsed,
+      metadata,
+      research,
+      documentFacts: metadata.documentFacts,
+      candidateClaims,
+      externalChecks,
+    });
+    const finalPromptHash = hashPrompt(FACT_CHECK_SYSTEM, finalPrompt);
+    const finalStart = Date.now();
+    const finalResult = await callGPTMiniDetailed(FACT_CHECK_SYSTEM, finalPrompt);
+    report = safeJsonParse<FactCheckReport>(finalResult.text);
+    await recordStageLog({
+      reviewId,
+      stage: "fact_check_finalize",
+      model: finalResult.model,
+      status: "complete",
+      durationMs: Date.now() - finalStart,
+      inputTokens: finalResult.usage?.inputTokens,
+      outputTokens: finalResult.usage?.outputTokens,
+      promptHash: finalPromptHash,
+      metadata: { externalChecks: unresolved.length },
+    });
+  }
+
+  await prisma.review.update({
+    where: { id: reviewId },
+    data: { factCheckData: report as never },
+  });
+  emit({
+    stage: 3,
+    name: "Case Research + Fact Check",
+    status: "complete",
+    data: report,
+  });
+  return report;
+}
+
 export type OnProgress = (update: StageUpdate) => void;
 
 export async function runPipeline(
@@ -357,65 +519,196 @@ export async function runPipeline(
   const runYouTube = analysisMode !== "legal_only";
   const runResearch = analysisMode !== "monetization_only";
   const runLegal = analysisMode !== "monetization_only";
+  const review = await prisma.review.findUnique({ where: { id: reviewId } });
+  if (!review) {
+    throw new Error(`Review not found: ${reviewId}`);
+  }
+
+  const documentFacts = metadata.documentFacts ??
+    (Array.isArray(review.supplementalDocs) ? (review.supplementalDocs as unknown as DocumentFacts[]) : undefined);
+  const videoFindings = metadata.videoFindings ??
+    (Array.isArray(review.videoFindings) ? (review.videoFindings as unknown as CaseMetadata["videoFindings"]) : undefined);
+  const enrichedMetadata: CaseMetadata = {
+    ...metadata,
+    documentFacts,
+    videoFindings,
+    videoTranscript: metadata.videoTranscript ?? review.videoTranscript ?? undefined,
+  };
+
+  const warnings = asStringArray(review.analysisWarnings);
+  const addWarning = async (warning: string) => {
+    warnings.push(warning);
+    await appendReviewWarning(reviewId, warning);
+  };
+
+  if (review.status === "completed" && review.synthesis) {
+    return review.synthesis as unknown as SynthesisReport;
+  }
 
   // --- Stage 0: Parse ---
-  emit({ stage: 0, name: "Script Parser", status: "running" });
   let parsed: ParsedScript;
-  try {
-    const parseResult = await callGPTMini(PARSER_SYSTEM, buildParserPrompt(script));
-    parsed = safeJsonParse<ParsedScript>(parseResult);
-    await prisma.review.update({
-      where: { id: reviewId },
-      data: { parsedEntities: parsed as never },
-    });
+  if (isParsedScript(review.parsedEntities)) {
+    parsed = review.parsedEntities;
     emit({ stage: 0, name: "Script Parser", status: "complete", data: parsed });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "Parse failed";
-    emit({ stage: 0, name: "Script Parser", status: "error", error: msg });
-    throw new Error(`Stage 0 failed: ${msg}`);
+  } else {
+    emit({ stage: 0, name: "Script Parser", status: "running" });
+    try {
+      const parserPrompt = buildParserPrompt(script);
+      const promptHash = hashPrompt(PARSER_SYSTEM, parserPrompt);
+      const startedAt = Date.now();
+      const parseResult = await callGPTMiniDetailed(PARSER_SYSTEM, parserPrompt);
+      parsed = safeJsonParse<ParsedScript>(parseResult.text);
+      await prisma.review.update({
+        where: { id: reviewId },
+        data: { parsedEntities: parsed as never },
+      });
+      await recordStageLog({
+        reviewId,
+        stage: "parser",
+        model: parseResult.model,
+        status: "complete",
+        durationMs: Date.now() - startedAt,
+        inputTokens: parseResult.usage?.inputTokens,
+        outputTokens: parseResult.usage?.outputTokens,
+        promptHash,
+      });
+      emit({ stage: 0, name: "Script Parser", status: "complete", data: parsed });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Parse failed";
+      await recordFailedAnalysis({
+        reviewId,
+        stage: "parser",
+        error: msg,
+      });
+      emit({ stage: 0, name: "Script Parser", status: "error", error: msg });
+      throw new Error(`Stage 0 failed: ${msg}`);
+    }
   }
+
+  const persistedPolicyFlags = Array.isArray(review.youtubeFlags)
+    ? (review.youtubeFlags as unknown as PolicyFlag[])
+    : null;
+  const persistedResearch = isResearchFindings(review.researchData)
+    ? (review.researchData as unknown as ResearchFindings)
+    : null;
+  const persistedFactCheck = isFactCheckReport(review.factCheckData)
+    ? (review.factCheckData as unknown as FactCheckReport)
+    : null;
+  const persistedLegalFlags = Array.isArray(review.legalFlags)
+    ? (review.legalFlags as unknown as LegalFlag[])
+    : null;
 
   // --- Stages 2 + 3 in parallel (YouTube + Research), with mode-based skips ---
   const youtubeTask = async (): Promise<PolicyFlag[]> => {
+    if (persistedPolicyFlags) {
+      emit({ stage: 2, name: "YouTube Policy", status: "complete", data: persistedPolicyFlags });
+      return persistedPolicyFlags;
+    }
+
     emit({ stage: 2, name: "YouTube Policy", status: "running" });
-    const ytResult = await callGPT(
-      YOUTUBE_SYSTEM,
-      buildYoutubePrompt(script, parsed, metadata)
+    const prompt = buildYoutubePrompt(script, parsed, enrichedMetadata);
+    const promptHash = hashPrompt(YOUTUBE_SYSTEM, prompt);
+    const startedAt = Date.now();
+    const ytResult = await callGPTDetailed(YOUTUBE_SYSTEM, prompt);
+    const rawFlags = safeJsonParse<PolicyFlag[]>(ytResult.text);
+    const finalFlags = dedupePolicyFlags(
+      mergePolicyFlags(
+        mergePolicyFlags(rawFlags, heuristicPolicyFlags(script)),
+        videoFindingsToPolicyFlags(enrichedMetadata.videoFindings ?? [])
+      )
     );
-    const flags = safeJsonParse<PolicyFlag[]>(ytResult);
     await prisma.review.update({
       where: { id: reviewId },
-      data: { youtubeFlags: flags as never[] },
+      data: { youtubeFlags: finalFlags as never[] },
     });
-    emit({ stage: 2, name: "YouTube Policy", status: "complete", data: flags });
-    return flags;
+    await recordStageLog({
+      reviewId,
+      stage: "youtube_policy",
+      model: ytResult.model,
+      status: "complete",
+      durationMs: Date.now() - startedAt,
+      inputTokens: ytResult.usage?.inputTokens,
+      outputTokens: ytResult.usage?.outputTokens,
+      promptHash,
+    });
+    emit({ stage: 2, name: "YouTube Policy", status: "complete", data: finalFlags });
+    return finalFlags;
   };
 
   const researchTask = async (): Promise<ResearchFindings | null> => {
-    emit({ stage: 3, name: "Case Research", status: "running" });
-    const queries = buildCaseResearchQueries(parsed, metadata);
-    const results: string[] = [];
-
-    const sonarResults = await Promise.allSettled(
-      queries.map((q) => callSonar(q))
-    );
-    for (const r of sonarResults) {
-      if (r.status === "fulfilled") results.push(r.value);
+    if (persistedResearch) {
+      emit({ stage: 3, name: "Case Research", status: "complete", data: persistedResearch });
+      return persistedResearch;
     }
 
-    const suspects = parsed.entities.filter((e) => e.role === "suspect");
-    if (suspects.length > 0) {
+    emit({ stage: 3, name: "Case Research", status: "running" });
+    const queries = buildCaseResearchQueries(parsed, enrichedMetadata);
+    const cacheKey = buildResearchCacheKey({
+      parsed,
+      state: enrichedMetadata.state,
+      caseStatus: enrichedMetadata.caseStatus,
+    });
+    const cached = await getCachedResearch(cacheKey);
+    if (cached) {
+      await prisma.review.update({
+        where: { id: reviewId },
+        data: { researchData: cached as never },
+      });
+      await recordStageLog({
+        reviewId,
+        stage: "research",
+        model: "cache",
+        status: "complete",
+        cacheHit: true,
+        metadata: { queryCount: queries.length },
+      });
+      emit({ stage: 3, name: "Case Research", status: "complete", data: cached });
+      return cached;
+    }
+
+    const results: string[] = [];
+    for (const query of queries) {
       try {
-        const dockets = await searchDockets(
-          `${suspects[0].name} ${metadata.state}`
-        );
+        const startedAt = Date.now();
+        const promptHash = hashPrompt("research_query", query);
+        const result = await callSonarDetailed(query);
+        results.push(result.text);
+        await recordStageLog({
+          reviewId,
+          stage: "research_query",
+          model: result.model,
+          status: "complete",
+          durationMs: Date.now() - startedAt,
+          inputTokens: result.usage?.inputTokens,
+          outputTokens: result.usage?.outputTokens,
+          promptHash,
+        });
+      } catch (err) {
+        await recordStageLog({
+          reviewId,
+          stage: "research_query",
+          model: "sonar-pro",
+          status: "error",
+          promptHash: hashPrompt("research_query", query),
+          metadata: { error: String(err) },
+        });
+      }
+    }
+
+    const suspects = parsed.entities.filter((e) => e.role === "suspect").slice(0, 2);
+    for (const suspect of suspects) {
+      try {
+        const dockets = await searchDockets(`${suspect.name} ${enrichedMetadata.state}`);
         if (dockets?.results?.length > 0) {
-          results.push(
-            `Court records: ${JSON.stringify(dockets.results.slice(0, 3))}`
-          );
+          const links = dockets.results.slice(0, 5).map((item: Record<string, unknown>) => {
+            const title = typeof item.caseName === "string" ? item.caseName : "Court docket";
+            const url = typeof item.absolute_url === "string" ? item.absolute_url : "";
+            return `${title}${url ? ` — ${url}` : ""}`;
+          });
+          results.push(`Court records for ${suspect.name}: ${links.join(" | ")}`);
         }
       } catch {
-        // CourtListener is optional
+        // CourtListener remains best-effort.
       }
     }
 
@@ -424,21 +717,46 @@ export async function runPipeline(
       return null;
     }
 
-    const synthResult = await callGPT(
-      RESEARCH_SYNTHESIS_SYSTEM,
-      buildResearchSynthesisPrompt(results, metadata)
-    );
-    const findings = safeJsonParse<ResearchFindings>(synthResult);
+    const synthPrompt = buildResearchSynthesisPrompt(results, enrichedMetadata);
+    const promptHash = hashPrompt(RESEARCH_SYNTHESIS_SYSTEM, synthPrompt);
+    const startedAt = Date.now();
+    const synthResult = await callGPTDetailed(RESEARCH_SYNTHESIS_SYSTEM, synthPrompt);
+    const findings = safeJsonParse<ResearchFindings>(synthResult.text);
     await prisma.review.update({
       where: { id: reviewId },
       data: { researchData: findings as never },
+    });
+    await saveResearchCache({
+      cacheKey,
+      caseState: enrichedMetadata.state,
+      caseStatus: enrichedMetadata.caseStatus,
+      normalizedPeople: getResearchIdentity(parsed),
+      queryCount: queries.length,
+      queries,
+      rawResults: results,
+      synthesized: findings,
+    });
+    await recordStageLog({
+      reviewId,
+      stage: "research_synthesis",
+      model: synthResult.model,
+      status: "complete",
+      durationMs: Date.now() - startedAt,
+      inputTokens: synthResult.usage?.inputTokens,
+      outputTokens: synthResult.usage?.outputTokens,
+      promptHash,
+      metadata: { queryCount: queries.length },
     });
     emit({ stage: 3, name: "Case Research", status: "complete", data: findings });
     return findings;
   };
 
-  const youtubePromise = runYouTube ? youtubeTask() : Promise.resolve<PolicyFlag[]>([]);
-  const researchPromise = runResearch ? researchTask() : Promise.resolve<ResearchFindings | null>(null);
+  const youtubePromise = runYouTube
+    ? youtubeTask()
+    : Promise.resolve<PolicyFlag[]>([]);
+  const researchPromise = runResearch
+    ? researchTask()
+    : Promise.resolve<ResearchFindings | null>(null);
 
   if (!runYouTube) {
     emit({
@@ -464,97 +782,178 @@ export async function runPipeline(
 
   let policyFlags: PolicyFlag[] =
     youtubeResult.status === "fulfilled" ? youtubeResult.value : [];
-  if (runYouTube) {
-    policyFlags = mergePolicyFlags(policyFlags, heuristicPolicyFlags(script));
-    policyFlags = mergePolicyFlags(
-      policyFlags,
-      videoFindingsToPolicyFlags(metadata.videoFindings ?? [])
-    );
-    policyFlags = dedupePolicyFlags(policyFlags);
-    await prisma.review.update({
-      where: { id: reviewId },
-      data: { youtubeFlags: policyFlags as never[] },
-    });
-  }
   if (youtubeResult.status === "rejected") {
+    const error = String(youtubeResult.reason);
+    await addWarning(`YouTube policy stage degraded: ${error}`);
+    await recordFailedAnalysis({
+      reviewId,
+      stage: "youtube_policy",
+      error,
+    });
     emit({
       stage: 2,
       name: "YouTube Policy",
       status: "error",
-      error: String(youtubeResult.reason),
+      error,
+    });
+    policyFlags = dedupePolicyFlags(
+      mergePolicyFlags(
+        heuristicPolicyFlags(script),
+        videoFindingsToPolicyFlags(enrichedMetadata.videoFindings ?? [])
+      )
+    );
+    await prisma.review.update({
+      where: { id: reviewId },
+      data: { youtubeFlags: policyFlags as never[] },
     });
   }
 
   const research: ResearchFindings | null =
     researchResult.status === "fulfilled" ? researchResult.value : null;
   if (researchResult.status === "rejected") {
+    const error = String(researchResult.reason);
+    await addWarning(`Case research stage degraded: ${error}`);
+    await recordFailedAnalysis({
+      reviewId,
+      stage: "research",
+      error,
+    });
     emit({
       stage: 3,
       name: "Case Research",
       status: "error",
-      error: String(researchResult.reason),
+      error,
     });
+  }
+
+  let factCheck: FactCheckReport | null = null;
+  if (runResearch) {
+    try {
+      factCheck = await runFactCheckStage({
+        reviewId,
+        script,
+        parsed,
+        metadata: enrichedMetadata,
+        research,
+        existing: persistedFactCheck,
+        emit,
+      });
+    } catch (err) {
+      const error = String(err);
+      await addWarning(`Fact-check stage degraded: ${error}`);
+      await recordFailedAnalysis({
+        reviewId,
+        stage: "fact_check",
+        error,
+      });
+    }
   }
 
   // --- Stage 1: Legal Review — Multi-Model Cross-Validation ---
   let legalFlags: LegalFlag[] = [];
   if (runLegal) {
-    emit({ stage: 1, name: "Legal Review (Cross-Check)", status: "running" });
-    try {
-      const stateLaw = await prisma.stateDefamationLaw.findFirst({
-        where: {
-          OR: [
-            { state: { equals: metadata.state, mode: "insensitive" } },
-            { abbrev: { equals: metadata.state, mode: "insensitive" } },
-          ],
-        },
-      });
-
-      const { flags, raw } = await runMultiModelLegalReview(
-        script,
-        parsed,
-        metadata,
-        (stateLaw as never) ?? { note: "State law not in database, use general US defamation principles" },
-        research ?? undefined,
-        metadata.documentFacts
+    if (persistedLegalFlags) {
+      legalFlags = persistedLegalFlags;
+      emit({ stage: 1, name: "Legal Review (Cross-Check)", status: "complete", data: legalFlags });
+    } else {
+      emit({ stage: 1, name: "Legal Review (Cross-Check)", status: "running" });
+      try {
+        const stateLaw = await prisma.stateDefamationLaw.findFirst({
+          where: {
+            OR: [
+              { state: { equals: enrichedMetadata.state, mode: "insensitive" } },
+              { abbrev: { equals: enrichedMetadata.state, mode: "insensitive" } },
+            ],
+          },
+        });
+        const legalPrompt = buildLegalPrompt(
+          script,
+          parsed,
+          enrichedMetadata,
+          (stateLaw as never) ?? { note: "State law not in database, use general US defamation principles" },
+          research ?? undefined,
+          enrichedMetadata.documentFacts,
+          factCheck
+        );
+        const promptHash = hashPrompt(LEGAL_SYSTEM, legalPrompt);
+        const startedAt = Date.now();
+        const { flags, raw, warnings: legalWarnings, audits } =
+          await runMultiModelLegalReview(
+            script,
+            parsed,
+            enrichedMetadata,
+            (stateLaw as never) ?? {
+              note: "State law not in database, use general US defamation principles",
+            },
+            research ?? undefined,
+            enrichedMetadata.documentFacts,
+            factCheck
+          );
+        legalFlags = flags;
+        for (const warning of legalWarnings) {
+          await addWarning(warning);
+        }
+        for (const audit of audits) {
+          await recordStageLog({
+            reviewId,
+            stage: "legal_review_model",
+            model: audit.model,
+            status: audit.status,
+            inputTokens: audit.inputTokens,
+            outputTokens: audit.outputTokens,
+            promptHash,
+            metadata: audit.error ? { error: audit.error } : undefined,
+          });
+        }
+        await recordStageLog({
+          reviewId,
+          stage: "legal_review",
+          status: "complete",
+          durationMs: Date.now() - startedAt,
+          promptHash,
+          metadata: { flags: legalFlags.length },
+        });
+        await prisma.review.update({
+          where: { id: reviewId },
+          data: {
+            legalFlags: legalFlags as never[],
+            legalCrossValidation: raw as never,
+          },
+        });
+        emit({ stage: 1, name: "Legal Review (Cross-Check)", status: "complete", data: legalFlags });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Legal review failed";
+        await addWarning(`Legal review stage degraded: ${msg}`);
+        await recordFailedAnalysis({
+          reviewId,
+          stage: "legal_review",
+          error: msg,
+        });
+        emit({ stage: 1, name: "Legal Review (Cross-Check)", status: "error", error: msg });
+        legalFlags = [{
+          text: "LEGAL REVIEW STAGE FAILED",
+          person: "N/A",
+          riskType: "defamation",
+          severity: "severe",
+          reasoning: `Legal analysis could not be completed: ${msg}. Manual legal review required.`,
+          saferRewrite: "N/A",
+          counselReview: true,
+          confidence: 0,
+        }];
+      }
+      legalFlags = mergeLegalFlags(legalFlags, heuristicLegalFlags(script));
+      legalFlags = mergeLegalFlags(
+        legalFlags,
+        videoFindingsToLegalFlags(enrichedMetadata.videoFindings ?? [])
       );
-
-      legalFlags = flags;
-
+      legalFlags = dedupeLegalFlags(legalFlags);
       await prisma.review.update({
         where: { id: reviewId },
         data: {
           legalFlags: legalFlags as never[],
-          legalCrossValidation: raw as never,
         },
       });
-      emit({ stage: 1, name: "Legal Review (Cross-Check)", status: "complete", data: legalFlags });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Legal review failed";
-      emit({ stage: 1, name: "Legal Review (Cross-Check)", status: "error", error: msg });
-      legalFlags = [{
-        text: "LEGAL REVIEW STAGE FAILED",
-        person: "N/A",
-        riskType: "defamation",
-        severity: "severe",
-        reasoning: `Legal analysis could not be completed: ${msg}. Manual legal review required.`,
-        saferRewrite: "N/A",
-        counselReview: true,
-        confidence: 0,
-      }];
     }
-    legalFlags = mergeLegalFlags(legalFlags, heuristicLegalFlags(script));
-    legalFlags = mergeLegalFlags(
-      legalFlags,
-      videoFindingsToLegalFlags(metadata.videoFindings ?? [])
-    );
-    legalFlags = dedupeLegalFlags(legalFlags);
-    await prisma.review.update({
-      where: { id: reviewId },
-      data: {
-        legalFlags: legalFlags as never[],
-      },
-    });
   } else {
     emit({
       stage: 1,
@@ -574,14 +973,41 @@ export async function runPipeline(
       legalFlags,
       policyFlags,
       research,
-      metadata
+      enrichedMetadata,
+      factCheck
     );
+    const promptHash = hashPrompt(SYNTHESIS_SYSTEM, synthesisPrompt);
     try {
-      const synthResult = await callClaude(SYNTHESIS_SYSTEM, synthesisPrompt);
-      report = await parseSynthesisResponse(synthResult);
+      const startedAt = Date.now();
+      const synthResult = await callClaudeDetailed(SYNTHESIS_SYSTEM, synthesisPrompt);
+      report = await parseSynthesisResponse(synthResult.text);
+      await recordStageLog({
+        reviewId,
+        stage: "synthesis",
+        model: synthResult.model,
+        status: "complete",
+        durationMs: Date.now() - startedAt,
+        inputTokens: synthResult.usage?.inputTokens,
+        outputTokens: synthResult.usage?.outputTokens,
+        promptHash,
+      });
     } catch (claudeErr) {
-      const fallbackResult = await callGPT(SYNTHESIS_SYSTEM, synthesisPrompt);
-      report = await parseSynthesisResponse(fallbackResult);
+      const warning = `Synthesis fallback: Claude failed and GPT was used instead. ${String(claudeErr)}`;
+      await addWarning(warning);
+      const startedAt = Date.now();
+      const fallbackResult = await callGPTDetailed(SYNTHESIS_SYSTEM, synthesisPrompt);
+      report = await parseSynthesisResponse(fallbackResult.text);
+      await recordStageLog({
+        reviewId,
+        stage: "synthesis",
+        model: fallbackResult.model,
+        status: "complete",
+        durationMs: Date.now() - startedAt,
+        inputTokens: fallbackResult.usage?.inputTokens,
+        outputTokens: fallbackResult.usage?.outputTokens,
+        promptHash,
+        metadata: { fallbackFrom: "claude-opus-4-6" },
+      });
       emit({
         stage: 4,
         name: "Synthesis",
@@ -593,9 +1019,9 @@ export async function runPipeline(
         },
       });
     }
-    // Inject the actual flags (prompt told Claude to return empty arrays to save tokens)
     report.legalFlags = legalFlags;
     report.policyFlags = policyFlags;
+    report.analysisWarnings = warnings;
     report.criticalEdits = normalizeReportEdits(report.criticalEdits ?? [], {
       maxItems: 5,
       dropLowPriority: true,
@@ -604,10 +1030,9 @@ export async function runPipeline(
       maxItems: 5,
       dropLowPriority: false,
     });
-    report.videoTimeline = (metadata.videoFindings ?? []).filter(
+    report.videoTimeline = (enrichedMetadata.videoFindings ?? []).filter(
       (f) => Array.isArray(f.risks) && f.risks.length > 0
     );
-    // Keep monetization dashboard consistent with actual policy flags shown in UI.
     report.riskDashboard.monetization =
       deriveMonetizationFromPolicyFlags(policyFlags);
     await prisma.review.update({
@@ -617,11 +1042,17 @@ export async function runPipeline(
         status: "completed",
         verdict: report.verdict,
         riskScore: report.riskScore,
+        analysisWarnings: warnings as never,
       },
     });
     emit({ stage: 4, name: "Synthesis", status: "complete", data: report });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Synthesis failed";
+    await recordFailedAnalysis({
+      reviewId,
+      stage: "synthesis",
+      error: msg,
+    });
     emit({ stage: 4, name: "Synthesis", status: "error", error: msg });
     report = {
       verdict: "borderline",
@@ -637,7 +1068,8 @@ export async function runPipeline(
       criticalEdits: [],
       recommendedEdits: [],
       edsaChecklist: [],
-      videoTimeline: (metadata.videoFindings ?? []).filter(
+      analysisWarnings: warnings,
+      videoTimeline: (enrichedMetadata.videoFindings ?? []).filter(
         (f) => Array.isArray(f.risks) && f.risks.length > 0
       ),
       legalFlags,
@@ -650,6 +1082,7 @@ export async function runPipeline(
         status: "completed",
         verdict: "borderline",
         riskScore: 50,
+        analysisWarnings: warnings as never,
       },
     });
   }
