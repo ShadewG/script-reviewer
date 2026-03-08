@@ -62,7 +62,7 @@
 - [x] **Quick re-analyze single line** — `/api/analyze-line` wired to AnnotatedScriptView inline edit with AI verdict
 
 ### Medium Priority
-- [x] **Script templates** — 5 templates: Cold Case, Trial Recap, Missing Person, Serial Killer Profile, Wrongful Conviction. Pre-fills metadata + scaffold text
+- [ ] **Script templates** — Removed: deemed redundant for current workflow
 - [x] **Glossary of legal terms** — 32 terms with click-toggled popovers. Applied to legal flag riskType + reasoning text
 - [x] **Risk heatmap on script** — Color-coded lines: red (legal), yellow (policy), darker red (both), green (edited). Minimap sidebar with flag ticks
 - [x] **Recommended disclaimer generator** — Context-aware disclaimers based on legal/policy flags, hasMinors, graphic content. Copyable output
