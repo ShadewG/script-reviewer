@@ -125,6 +125,23 @@ interface StageLogEntry {
   createdAt: string;
 }
 
+interface ParsedEntity {
+  name: string;
+  role: "suspect" | "victim" | "witness" | "officer" | "attorney" | "family" | "other";
+  allegations: string[];
+  labels: string[];
+}
+
+interface ParsedScript {
+  entities: ParsedEntity[];
+  profanity: Array<{ word: string; line: number; severity: string }>;
+  graphicContent: Array<{ description: string; line: number; type: string }>;
+  claims: Array<{ text: string; line: number; type: string; source?: string }>;
+  locations: string[];
+  dates: string[];
+  timeline: string[];
+}
+
 interface ReviewData {
   id: string;
   createdAt: string;
@@ -134,6 +151,16 @@ interface ReviewData {
   caseState: string;
   caseStatus: string;
   hasMinors: boolean;
+  footageTypes: string[] | null;
+  videoTitle: string | null;
+  thumbnailDesc: string | null;
+  videoTranscript: string | null;
+  videoFindings: Array<{
+    second: number;
+    timecode: string;
+    risks: Array<{ category: string; severity: string; impact: string; policyName: string; reasoning: string; detectedText?: string }>;
+    thumbnailDataUrl?: string;
+  }> | null;
   supplementalDocs: DocumentFacts[] | null;
   synthesis: SynthesisReport | null;
   legalFlags: LegalFlag[] | null;
@@ -143,7 +170,7 @@ interface ReviewData {
     perplexity: LegalFlag[];
   } | null;
   youtubeFlags: PolicyFlag[] | null;
-  parsedEntities: Record<string, unknown> | null;
+  parsedEntities: ParsedScript | null;
   researchData: Record<string, unknown> | null;
   factCheckData: { summary: string; findings: FactCheckFinding[] } | null;
   analysisWarnings: string[] | null;
@@ -606,7 +633,7 @@ function renderWithGlossary(text: string): React.ReactNode {
   return parts;
 }
 
-type TabKey = "overview" | "video" | "script" | "legal" | "youtube" | "research" | "diagnostics" | "raw";
+type TabKey = "overview" | "entities" | "video" | "script" | "legal" | "youtube" | "research" | "diagnostics" | "raw";
 
 function ResultsContent() {
   const searchParams = useSearchParams();
@@ -626,6 +653,7 @@ function ResultsContent() {
   const [dismissingKey, setDismissingKey] = useState<string | null>(null);
   const [showDisclaimers, setShowDisclaimers] = useState(false);
   const [resuming, setResuming] = useState(false);
+  const [expandedRisk, setExpandedRisk] = useState<string | null>(null);
   const [resumeStages, setResumeStages] = useState<Array<{ stage: number; name: string; status: string; error?: string }>>([]);
   const [stageLogs, setStageLogs] = useState<StageLogEntry[]>([]);;
   const { theme, toggle: toggleTheme } = useTheme();
@@ -1078,28 +1106,87 @@ function ResultsContent() {
       )}
 
       {/* Risk Dashboard */}
-      {report?.riskDashboard && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2 mb-6">
-          {Object.entries(report.riskDashboard).map(([key, val]) => (
-            <div key={key} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 text-center">
-              <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-2">
-                {formatLabel(key.replace(/([A-Z])/g, "_$1"))}
-              </div>
-              <div
-                className="text-sm uppercase font-bold"
-                style={{ color: riskColor(val) }}
-              >
-                {val.replaceAll("_", " ")}
-              </div>
+      {report?.riskDashboard && (() => {
+        const allLegal = data.legalFlags ?? report.legalFlags ?? [];
+        const allPolicy = data.youtubeFlags ?? report.policyFlags ?? [];
+        const riskFlagMap: Record<string, Array<{ type: string; severity: string; text: string; reasoning: string }>> = {
+          communityGuidelines: allPolicy
+            .filter(f => f.category === "community_guidelines")
+            .map(f => ({ type: "policy", severity: f.severity, text: f.text, reasoning: f.reasoning })),
+          ageRestriction: allPolicy
+            .filter(f => f.category === "age_restriction")
+            .map(f => ({ type: "policy", severity: f.severity, text: f.text, reasoning: f.reasoning })),
+          monetization: allPolicy
+            .filter(f => f.category === "monetization" || f.impact === "limited_ads" || f.impact === "no_ads")
+            .map(f => ({ type: "policy", severity: f.severity, text: f.text, reasoning: f.reasoning })),
+          privacy: [
+            ...allLegal.filter(f => f.riskType === "privacy" || f.riskType === "false_light" || f.riskType === "appropriation")
+              .map(f => ({ type: "legal", severity: f.severity, text: f.text, reasoning: f.reasoning })),
+            ...allPolicy.filter(f => f.category === "community_guidelines" && f.policyName.toLowerCase().includes("privacy"))
+              .map(f => ({ type: "policy", severity: f.severity, text: f.text, reasoning: f.reasoning })),
+          ],
+          legal: allLegal
+            .map(f => ({ type: "legal", severity: f.severity, text: f.text, reasoning: f.reasoning })),
+        };
+        return (
+          <div className="mb-6">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
+              {Object.entries(report.riskDashboard).map(([key, val]) => {
+                const flags = riskFlagMap[key] ?? [];
+                const isExpanded = expandedRisk === key;
+                return (
+                  <button
+                    key={key}
+                    onClick={() => setExpandedRisk(isExpanded ? null : key)}
+                    className={`border bg-[var(--bg-surface)] p-3 text-center transition-colors hover:bg-[var(--bg-elevated)] ${
+                      isExpanded ? "border-[var(--text-bright)]" : "border-[var(--border)]"
+                    }`}
+                  >
+                    <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-2">
+                      {formatLabel(key.replace(/([A-Z])/g, "_$1"))}
+                    </div>
+                    <div className="text-sm uppercase font-bold" style={{ color: riskColor(val) }}>
+                      {val.replaceAll("_", " ")}
+                    </div>
+                    {flags.length > 0 && (
+                      <div className="text-[9px] text-[var(--text-dim)] mt-1">{flags.length} flag{flags.length !== 1 ? "s" : ""}</div>
+                    )}
+                  </button>
+                );
+              })}
             </div>
-          ))}
-        </div>
-      )}
+
+            {/* Drill-down panel */}
+            {expandedRisk && (riskFlagMap[expandedRisk] ?? []).length > 0 && (
+              <div className="border border-[var(--border)] bg-[var(--bg-surface)] mt-2 p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="text-xs uppercase tracking-wider text-[var(--text-dim)]">
+                    {formatLabel(expandedRisk.replace(/([A-Z])/g, "_$1"))} — Contributing Flags
+                  </h4>
+                  <button onClick={() => setExpandedRisk(null)} className="text-[10px] text-[var(--text-dim)] hover:text-[var(--text)]">CLOSE</button>
+                </div>
+                <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                  {(riskFlagMap[expandedRisk] ?? []).map((flag, i) => (
+                    <div key={i} className="border border-[var(--border)] bg-[var(--bg)] p-2">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="w-1.5 h-1.5" style={{ background: sevColor(flag.severity) }} />
+                        <span className="text-[10px] uppercase" style={{ color: sevColor(flag.severity) }}>{flag.severity}</span>
+                        <span className="text-[10px] text-[var(--text-dim)] border border-[var(--border)] px-1">{flag.type}</span>
+                      </div>
+                      <p className="text-xs text-[var(--text)]">{flag.reasoning}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Tabs + Severity Filter — sticky container */}
       <div className="sticky top-0 z-20 bg-[var(--bg)]" data-no-print>
       <div data-tour="tabs" className="flex gap-0 border-b border-[var(--border)] mb-0 overflow-x-auto">
-        {(["overview", "video", "script", "legal", "youtube", "research", "diagnostics", "raw"] as const).map((tab) => {
+        {(["overview", "entities", "video", "script", "legal", "youtube", "research", "diagnostics", "raw"] as const).map((tab) => {
           const count = tabCounts[tab];
           return (
             <button
@@ -1553,6 +1640,49 @@ function ResultsContent() {
                 </div>
               </section>
             )}
+
+            {/* Evidence Cross-Reference */}
+            {data.supplementalDocs && data.supplementalDocs.length > 0 && data.factCheckData &&
+              data.factCheckData.findings.some((f: FactCheckFinding) => f.basis === "documents") && (
+              <section>
+                <h3 className="text-xs uppercase tracking-wider text-[var(--text-dim)] mb-3 flex items-center gap-2">
+                  <span className="w-2 h-2 bg-[var(--text-dim)]" /> Evidence Cross-Reference
+                  <span className="text-[10px] font-normal normal-case tracking-normal">
+                    Claims verified against uploaded documents
+                  </span>
+                </h3>
+                <div className="space-y-2">
+                  {data.factCheckData.findings
+                    .filter((f: FactCheckFinding) => f.basis === "documents")
+                    .map((f: FactCheckFinding, i: number) => {
+                      const verdictColors: Record<string, string> = {
+                        supported: "var(--green)", contradicted: "var(--red)", unclear: "var(--yellow)", needs_external_verification: "var(--text-dim)",
+                      };
+                      const color = verdictColors[f.verdict] ?? "var(--text-dim)";
+                      // Find which doc likely contains this evidence
+                      const matchingDoc = data.supplementalDocs?.find(doc =>
+                        doc.verifiableFacts?.some(vf => f.evidence.toLowerCase().includes(vf.claim.toLowerCase().slice(0, 30)))
+                      );
+                      return (
+                        <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+                          <div className="flex items-center gap-2 mb-1 flex-wrap">
+                            <span className="w-2 h-2" style={{ background: color }} />
+                            <span className="text-[10px] uppercase" style={{ color }}>{f.verdict.replace(/_/g, " ")}</span>
+                            {f.line && <span className="text-[10px] text-[var(--text-dim)]">Line {f.line}</span>}
+                            {matchingDoc && (
+                              <span className="text-[10px] px-1 border border-[var(--border)] text-[var(--text-dim)]">
+                                Source: {matchingDoc.fileName}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-[var(--text)] mb-1">Script: {f.claim}</p>
+                          <p className="text-[10px] text-[var(--text-dim)]">Evidence: {f.evidence}</p>
+                        </div>
+                      );
+                    })}
+                </div>
+              </section>
+            )}
           </div>
         )}
 
@@ -1586,6 +1716,189 @@ function ResultsContent() {
             />
           </div>
         )}
+
+        {/* Entities Tab */}
+        {activeTab === "entities" && (() => {
+          const parsed = data.parsedEntities;
+          if (!parsed || !Array.isArray(parsed.entities) || parsed.entities.length === 0) {
+            return (
+              <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-8 text-center">
+                <p className="text-xs text-[var(--text-dim)]">No parsed entities available.</p>
+              </div>
+            );
+          }
+
+          const roleColors: Record<string, string> = {
+            suspect: "var(--red)", victim: "var(--amber)", witness: "var(--yellow)",
+            officer: "var(--text-dim)", attorney: "var(--text-dim)", family: "var(--text-dim)", other: "var(--text-dim)",
+          };
+          const roleOrder = ["suspect", "victim", "witness", "officer", "attorney", "family", "other"];
+          const grouped = roleOrder
+            .map(role => ({ role, entities: parsed.entities.filter((e: ParsedEntity) => e.role === role) }))
+            .filter(g => g.entities.length > 0);
+
+          // Cross-reference with research personProfiles
+          const research = data.researchData as Record<string, unknown> | null;
+          const profiles = Array.isArray((research as Record<string, unknown>)?.personProfiles)
+            ? ((research as Record<string, unknown>).personProfiles as Array<Record<string, string | boolean | null>>)
+            : [];
+          const profileMap = new Map(profiles.map(p => [String(p.name).toLowerCase(), p]));
+
+          // Cross-reference with legal flags
+          const legalByPerson = new Map<string, LegalFlag[]>();
+          for (const f of (data.legalFlags ?? [])) {
+            const key = f.person.toLowerCase();
+            if (!legalByPerson.has(key)) legalByPerson.set(key, []);
+            legalByPerson.get(key)!.push(f);
+          }
+
+          return (
+            <div className="space-y-6">
+              {/* Summary */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {grouped.map(g => (
+                  <div key={g.role} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 text-center">
+                    <div className="text-lg tabular-nums" style={{ color: roleColors[g.role] ?? "var(--text)" }}>{g.entities.length}</div>
+                    <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)]">{g.role}{g.entities.length !== 1 ? "s" : ""}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Entity Cards */}
+              {grouped.map(g => (
+                <div key={g.role}>
+                  <h3 className="text-xs uppercase tracking-wider mb-3 flex items-center gap-2" style={{ color: roleColors[g.role] }}>
+                    <span className="w-2 h-2" style={{ background: roleColors[g.role] }} />
+                    {g.role}s ({g.entities.length})
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {g.entities.map((entity: ParsedEntity, i: number) => {
+                      const profile = profileMap.get(entity.name.toLowerCase());
+                      const flags = legalByPerson.get(entity.name.toLowerCase()) ?? [];
+                      return (
+                        <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-4">
+                          <div className="flex items-center gap-2 mb-2 flex-wrap">
+                            <span className="text-sm text-[var(--text-bright)] font-medium">{entity.name}</span>
+                            <span className="text-[10px] uppercase px-1 border" style={{ color: roleColors[entity.role], borderColor: roleColors[entity.role] }}>
+                              {entity.role}
+                            </span>
+                            {profile && Boolean(profile.isPublicFigure) && (
+                              <span className="text-[10px] uppercase px-1 border border-[var(--yellow)] text-[var(--yellow)]">Public Figure</span>
+                            )}
+                            {profile && Boolean(profile.isDeceased) && (
+                              <span className="text-[10px] uppercase px-1 border border-[var(--text-dim)] text-[var(--text-dim)]">Deceased</span>
+                            )}
+                            {flags.length > 0 && (
+                              <span className="text-[10px] text-[var(--red)]">{flags.length} legal flag{flags.length !== 1 ? "s" : ""}</span>
+                            )}
+                          </div>
+
+                          {/* Allegations */}
+                          {entity.allegations.length > 0 && (
+                            <div className="mb-2">
+                              <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Allegations</div>
+                              <div className="space-y-1">
+                                {entity.allegations.map((a, j) => (
+                                  <p key={j} className="text-xs text-[var(--text)]">{a}</p>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Labels */}
+                          {entity.labels.length > 0 && (
+                            <div className="flex gap-1 flex-wrap mb-2">
+                              {entity.labels.map((label, j) => (
+                                <span key={j} className="text-[9px] px-1.5 py-0.5 bg-[var(--bg-elevated)] border border-[var(--border)] text-[var(--text-dim)]">
+                                  {label}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Research profile info */}
+                          {profile && (
+                            <div className="border-t border-[var(--border)] pt-2 mt-2 text-[10px] text-[var(--text-dim)] space-y-1">
+                              {profile.newsCoverage && <p>Coverage: {String(profile.newsCoverage).slice(0, 150)}</p>}
+                              {profile.criminalRecord && <p>Record: {String(profile.criminalRecord).slice(0, 150)}</p>}
+                              {profile.publicFigureReason && <p>Public figure: {String(profile.publicFigureReason)}</p>}
+                            </div>
+                          )}
+
+                          {/* Legal flags summary */}
+                          {flags.length > 0 && (
+                            <div className="border-t border-[var(--border)] pt-2 mt-2">
+                              <div className="text-[10px] uppercase tracking-wider text-[var(--red)] mb-1">Legal Risks</div>
+                              {flags.slice(0, 3).map((f, j) => (
+                                <div key={j} className="flex items-center gap-1.5 mb-1">
+                                  <span className="w-1.5 h-1.5" style={{ background: sevColor(f.severity) }} />
+                                  <span className="text-[10px]" style={{ color: sevColor(f.severity) }}>{f.severity}</span>
+                                  <span className="text-[10px] text-[var(--text-dim)]">{f.riskType.replace(/_/g, " ")}</span>
+                                </div>
+                              ))}
+                              {flags.length > 3 && (
+                                <p className="text-[10px] text-[var(--text-dim)]">+ {flags.length - 3} more</p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+
+              {/* Script Claims */}
+              {Array.isArray(parsed.claims) && parsed.claims.length > 0 && (
+                <div>
+                  <h3 className="text-xs uppercase tracking-wider text-[var(--text-dim)] mb-3 flex items-center gap-2">
+                    <span className="w-2 h-2 bg-[var(--text-dim)]" /> Script Claims ({parsed.claims.length})
+                  </h3>
+                  <div className="space-y-1 max-h-[400px] overflow-y-auto">
+                    {parsed.claims.map((claim: ParsedScript["claims"][0], i: number) => {
+                      const typeColors: Record<string, string> = {
+                        fact: "var(--green)", attributed: "var(--yellow)", opinion: "var(--text-dim)", speculation: "var(--red)",
+                      };
+                      return (
+                        <div key={i} className="flex items-start gap-2 border border-[var(--border)] bg-[var(--bg-surface)] p-2">
+                          <span className="text-[10px] text-[var(--text-dim)] border border-[var(--border)] px-1 flex-shrink-0 mt-0.5">L{claim.line}</span>
+                          <span className="text-[10px] uppercase px-1 flex-shrink-0 mt-0.5" style={{ color: typeColors[claim.type] ?? "var(--text-dim)" }}>
+                            {claim.type}
+                          </span>
+                          <span className="text-xs text-[var(--text)]">{claim.text}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Locations & Dates */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {Array.isArray(parsed.locations) && parsed.locations.length > 0 && (
+                  <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+                    <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-2">Locations ({parsed.locations.length})</div>
+                    <div className="flex gap-1.5 flex-wrap">
+                      {parsed.locations.map((loc: string, i: number) => (
+                        <span key={i} className="text-xs px-2 py-0.5 bg-[var(--bg-elevated)] border border-[var(--border)] text-[var(--text)]">{loc}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {Array.isArray(parsed.dates) && parsed.dates.length > 0 && (
+                  <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+                    <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-2">Dates ({parsed.dates.length})</div>
+                    <div className="flex gap-1.5 flex-wrap">
+                      {parsed.dates.map((d: string, i: number) => (
+                        <span key={i} className="text-xs px-2 py-0.5 bg-[var(--bg-elevated)] border border-[var(--border)] text-[var(--text)] font-mono">{d}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
 
         {activeTab === "video" && (
           <div>
@@ -1878,6 +2191,44 @@ function ResultsContent() {
                   </div>
                 );
               })
+            )}
+
+            {/* Video Transcript with Synced Moments */}
+            {data.videoTranscript && (
+              <div className="mt-6">
+                <h3 className="text-xs uppercase tracking-wider text-[var(--text-dim)] mb-3 border-b border-[var(--border)] pb-2">
+                  Video Transcript
+                </h3>
+                <div className="border border-[var(--border)] bg-[var(--bg-surface)] max-h-[500px] overflow-y-auto">
+                  {data.videoTranscript.split("\n").map((line, i) => {
+                    // Check if any video findings are near this transcript line
+                    // Simple heuristic: highlight lines containing detected text from findings
+                    const findings = data.videoFindings ?? [];
+                    const matchingFinding = findings.find(f =>
+                      f.risks.some(r => r.detectedText && line.toLowerCase().includes(r.detectedText.toLowerCase().slice(0, 30)))
+                    );
+                    return (
+                      <div
+                        key={i}
+                        className={`flex text-[13px] leading-7 ${matchingFinding ? "cursor-pointer hover:brightness-110" : ""}`}
+                        style={{ background: matchingFinding ? "rgba(234, 179, 8, 0.1)" : "transparent" }}
+                      >
+                        <div className="w-10 flex-shrink-0 text-right pr-2 text-[var(--text-dim)] select-none border-r border-[var(--border)] text-[11px]">
+                          {i + 1}
+                        </div>
+                        <div className="pl-3 pr-2 flex-1 whitespace-pre-wrap break-words">
+                          {line || "\u00A0"}
+                          {matchingFinding && (
+                            <span className="ml-2 text-[10px] text-[var(--yellow)] font-mono">
+                              [{matchingFinding.timecode}]
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             )}
           </div>
         )}
