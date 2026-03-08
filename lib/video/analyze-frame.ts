@@ -3,7 +3,7 @@ import type { VideoFrameRisk } from "../pipeline/types";
 
 const ANALYSIS_RETRIES = 2;
 
-const FRAME_SYSTEM = `You are a strict YouTube risk reviewer for true-crime content.
+const FRAME_SYSTEM = `You are a practical YouTube ad-suitability reviewer for true-crime documentary content.
 Analyze ONE video frame and return ONLY JSON:
 {
   "risks": [
@@ -18,11 +18,13 @@ Analyze ONE video frame and return ONLY JSON:
   ]
 }
 If no visible risk, return {"risks": []}.
-Flag only visible issues in this frame: graphic gore/trauma, nudity, sexual content, explicit hate symbols/slurs, obvious drug use/paraphernalia, clearly readable doxxing-level PII.
+Flag only visible issues in this frame that are likely to matter in practice on YouTube: explicit unblurred gore/injury, nudity, sexual content, hate symbols/slurs, hard drug use/paraphernalia, clearly readable direct doxxing-level PII, or a clearly identifiable unblurred minor in a sensitive context.
 Do NOT flag generic true-crime context by itself.
+Do NOT flag blurred/pixelated/redacted/obscured imagery unless the disturbing detail is still plainly visible after the blur.
+Do NOT flag public-record screenshots, court exhibits, business records, IP logs, timestamps, device strings, road names without a street number, or generic maps by themselves.
 Do NOT flag uniforms, agency names, badges, "SHERIFF"/"POLICE" markings, or law-enforcement presence by itself.
 Do NOT flag "an identifiable person is visible" unless a concrete privacy trigger is present.
-Privacy risks require concrete evidence in-frame (examples: full street address with number + street name, readable phone/email, readable license plate tied to a private person, government ID/account number, clearly identifiable unblurred minor in sensitive context).`;
+Privacy risks require concrete evidence in-frame (examples: full street address with number + street name, readable phone/email, government ID/account number, or a clearly identifiable unblurred minor in sensitive context).`;
 
 const ADDRESS_SUFFIX =
   "(street|st|avenue|ave|road|rd|lane|ln|drive|dr|boulevard|blvd|court|ct|way|place|pl|terrace|ter|parkway|pkwy)";
@@ -30,19 +32,24 @@ const ADDRESS_REGEX = new RegExp(
   `\\b\\d{1,6}\\s+(?:[a-z0-9.'-]+\\s+){0,6}${ADDRESS_SUFFIX}\\b`,
   "i"
 );
+const ADDRESS_FALSE_POSITIVE_REGEX = /\b\d{1,4}\s+(?:am|pm|o'?clock)\b/i;
 const PHONE_REGEX =
   /\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b/;
 const EMAIL_REGEX = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
-const STRONG_PII_HINT_REGEX =
-  /\b(address|license plate|plate number|phone number|email|ssn|social security|passport|driver'?s license|account number|routing number|home address)\b/i;
+const DIRECT_ID_REGEX =
+  /\b(ssn|social security|passport|driver'?s license|account number|routing number|bank account|credit card|debit card)\b/i;
 const MINOR_HINT_REGEX =
   /\b(minor|child|kid|toddler|juvenile|daughter|son|grandchild|school age)\b/i;
 const FACE_HINT_REGEX =
   /\b(face|photo|portrait|identifiable|unblurred|clear image)\b/i;
+const BLURRED_VISUAL_REGEX =
+  /\b(blurred|pixelated|redacted|obscured|censored)\b/i;
 const LAW_ENFORCEMENT_ONLY_REGEX =
   /\b(sheriff|police|department|badge|uniform|officer|deputy|bodycam|law enforcement)\b/i;
 const ESCALATION_CONTENT_REGEX =
   /\b(blood|gore|graphic|dead body|corpse|weapon|gun|rifle|knife|drug|meth|cocaine|heroin|address|license plate|phone|email|ssn)\b/i;
+const PUBLIC_RECORD_TECHNICAL_REGEX =
+  /\b(ip address|ipv4|ipv6|meta platforms business record|business record|device fingerprint|agent string|user agent|login|photo uploaded|timestamp|geolocation)\b/i;
 const GRAPHIC_POLICY_REGEX =
   /\b(graphic|gore|violence|disturbing imagery|trauma|injury)\b/i;
 const GRAPHIC_HARD_EVIDENCE_REGEX =
@@ -80,11 +87,19 @@ function parseJsonSafe<T>(text: string): T | null {
 
 function hasConcretePrivacyEvidence(risk: VideoFrameRisk): boolean {
   const joined = `${risk.policyName} ${risk.reasoning} ${risk.detectedText ?? ""}`.toLowerCase();
+  if (PUBLIC_RECORD_TECHNICAL_REGEX.test(joined)) return false;
+  if (ADDRESS_FALSE_POSITIVE_REGEX.test(joined)) return false;
   if (ADDRESS_REGEX.test(joined)) return true;
   if (PHONE_REGEX.test(joined)) return true;
   if (EMAIL_REGEX.test(joined)) return true;
-  if (STRONG_PII_HINT_REGEX.test(joined)) return true;
-  if (MINOR_HINT_REGEX.test(joined) && FACE_HINT_REGEX.test(joined)) return true;
+  if (DIRECT_ID_REGEX.test(joined)) return true;
+  if (
+    MINOR_HINT_REGEX.test(joined) &&
+    FACE_HINT_REGEX.test(joined) &&
+    !BLURRED_VISUAL_REGEX.test(joined)
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -99,6 +114,8 @@ function isLikelyGraphicFalsePositive(risk: VideoFrameRisk): boolean {
     (risk.category === "community_guidelines" || risk.category === "age_restriction") &&
     GRAPHIC_POLICY_REGEX.test(joined);
   if (!isGraphicClass) return false;
+
+  if (BLURRED_VISUAL_REGEX.test(joined)) return true;
 
   // Keep graphic flags only when we have strong explicit injury evidence.
   if (GRAPHIC_HARD_EVIDENCE_REGEX.test(joined)) return false;
@@ -123,6 +140,9 @@ function normalizeAndFilterRisks(risks: VideoFrameRisk[]): VideoFrameRisk[] {
 
       // Drop vague monetization flags that only restate "sensitive true crime context".
       const joined = `${r.policyName} ${r.reasoning} ${r.detectedText ?? ""}`.toLowerCase();
+      if (PUBLIC_RECORD_TECHNICAL_REGEX.test(joined) && !hasConcretePrivacyEvidence(r)) {
+        return false;
+      }
       if (
         r.category === "monetization" &&
         /\b(sensitive true crime|sensitive events?|identifiable private individual|personal privacy)\b/i.test(

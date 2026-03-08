@@ -3,13 +3,41 @@ import type { LegalFlag, PolicyFlag, VideoFrameFinding } from "./types";
 const ADDRESS_SUFFIX =
   "(street|st|avenue|ave|road|rd|lane|ln|drive|dr|boulevard|blvd|court|ct|way|place|pl|terrace|ter|parkway|pkwy)";
 
-const ADDRESS_REGEXES = [
-  new RegExp(
-    `\\b\\d{1,6}\\s+(?:[a-z0-9.'-]+\\s+){0,5}${ADDRESS_SUFFIX}\\b`,
-    "i"
-  ),
-  new RegExp(`\\b${ADDRESS_SUFFIX}\\s+\\d{1,6}\\b`, "i"),
-];
+const PHONE_REGEX =
+  /\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b/;
+const EMAIL_REGEX = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
+const DIRECT_ID_REGEX =
+  /\b(ssn|social security|passport|driver'?s license|account number|routing number|bank account|credit card|debit card)\b/i;
+const BLURRED_VISUAL_REGEX =
+  /\b(blurred|pixelated|redacted|obscured|censored)\b/i;
+const PUBLIC_RECORD_TECHNICAL_REGEX =
+  /\b(ip address|ipv4|ipv6|meta platforms business record|business record|device fingerprint|agent string|user agent|login(?: action)?|photo uploaded|timestamp|geolocation|license plate)\b/i;
+const ADDRESS_STOPWORDS = new Set([
+  "am",
+  "pm",
+  "a",
+  "an",
+  "the",
+  "of",
+  "on",
+  "in",
+  "at",
+  "to",
+  "for",
+  "from",
+  "mile",
+  "miles",
+  "minute",
+  "minutes",
+  "hour",
+  "hours",
+  "day",
+  "days",
+  "year",
+  "years",
+  "o'clock",
+  "oclock",
+]);
 
 const PROFANITY_REGEXES: Array<{ word: string; regex: RegExp }> = [
   { word: "fuck", regex: /\b(?:fuck(?:ing|ed|er|ers)?|f\*{2,}k)\b/i },
@@ -23,8 +51,6 @@ const PROFANITY_REGEXES: Array<{ word: string; regex: RegExp }> = [
   { word: "dick", regex: /\bdick(?:head|heads|s)?\b/i },
 ];
 
-const STRONG_PRIVACY_EVIDENCE_REGEX =
-  /\b(\d{1,6}\s+[a-z0-9.'-]+(?:\s+[a-z0-9.'-]+){0,6}\s+(?:street|st|avenue|ave|road|rd|lane|ln|drive|dr|boulevard|blvd|court|ct|way|place|pl|terrace|ter|parkway|pkwy)|\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|ip address|license plate|social security|ssn|driver'?s license|passport|account number)\b/i;
 const MINOR_VISUAL_REGEX =
   /\b(minor|child|kid|juvenile|daughter|son|grandchild)\b/i;
 const FACE_VISUAL_REGEX = /\b(face|photo|portrait|identifiable|unblurred)\b/i;
@@ -62,11 +88,59 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   return union <= 0 ? 0 : inter / union;
 }
 
-function hasStrongPrivacyEvidenceFromVideoRisk(risk: VideoFrameFinding["risks"][number]): boolean {
+function extractStreetAddress(text: string): string | null {
+  const addressRegex = new RegExp(
+    `\\b\\d{1,6}\\s+(?:[a-z0-9.'-]+\\s+){1,5}${ADDRESS_SUFFIX}\\b`,
+    "ig"
+  );
+
+  for (const match of text.matchAll(addressRegex)) {
+    const candidate = match[0].trim();
+    const tokens = candidate
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
+    const middle = tokens.slice(1, -1);
+    const informative = middle.filter(
+      (token) => !ADDRESS_STOPWORDS.has(token) && /[a-z]/.test(token)
+    );
+    if (informative.length === 0) continue;
+    if (
+      middle.length > 0 &&
+      (ADDRESS_STOPWORDS.has(middle[0]) || middle[0].includes("'")) &&
+      informative.length < 2
+    ) {
+      continue;
+    }
+    return candidate;
+  }
+
+  return null;
+}
+
+function hasHardYoutubePrivacyEvidenceFromVideoRisk(
+  risk: VideoFrameFinding["risks"][number]
+): boolean {
   const joined = `${risk.policyName} ${risk.reasoning} ${risk.detectedText ?? ""}`;
-  if (STRONG_PRIVACY_EVIDENCE_REGEX.test(joined)) return true;
-  if (MINOR_VISUAL_REGEX.test(joined) && FACE_VISUAL_REGEX.test(joined)) return true;
+  if (PUBLIC_RECORD_TECHNICAL_REGEX.test(joined)) return false;
+  if (extractStreetAddress(joined)) return true;
+  if (PHONE_REGEX.test(joined)) return true;
+  if (EMAIL_REGEX.test(joined)) return true;
+  if (DIRECT_ID_REGEX.test(joined)) return true;
+  if (
+    MINOR_VISUAL_REGEX.test(joined) &&
+    FACE_VISUAL_REGEX.test(joined) &&
+    !BLURRED_VISUAL_REGEX.test(joined)
+  ) {
+    return true;
+  }
   return false;
+}
+
+function hasHardLegalPrivacyEvidenceFromVideoRisk(
+  risk: VideoFrameFinding["risks"][number]
+): boolean {
+  return hasHardYoutubePrivacyEvidenceFromVideoRisk(risk);
 }
 
 const TRAUMA_PATTERNS: Array<{
@@ -78,30 +152,21 @@ const TRAUMA_PATTERNS: Array<{
 }> = [
   {
     regex:
-      /\b(decompos(?:e|ed|ing|ition)|rott(?:ing|en)|charred remains|dismember(?:ed|ment)?|behead(?:ed|ing)?|decapitat(?:ed|ion))\b/i,
+      /\b(maggots|rotting flesh|skin sloughing|body fluids|liquefied remains|dismember(?:ed|ment)?|behead(?:ed|ing)?|decapitat(?:ed|ion)|severed (?:head|limb|arm|leg)|brain matter|guts|entrails|intestines|exposed bone)\b/i,
     severity: "severe",
     impact: "no_ads",
     policyName: "Graphic Violence and Gore",
     reason:
-      "Detected extreme trauma or post-mortem detail (decomposition/dismemberment/beheading class language).",
+      "Detected explicit gore or extreme post-mortem detail far beyond standard true-crime narration.",
   },
   {
     regex:
-      /\b(brain matter|guts|entrails|intestines|blood[- ]soaked|pool of blood|severed (head|limb|arm|leg)|open wound|exposed bone)\b/i,
+      /\b(mold beginning to form|blood[- ]soaked|pool of blood|open wound|charred remains)\b/i,
     severity: "high",
     impact: "limited_ads",
     policyName: "Graphic Injury Detail",
     reason:
-      "Detected highly graphic bodily injury detail likely to trigger reduced ad suitability.",
-  },
-  {
-    regex:
-      /\b(torture(?:d)?|agon(?:y|izing)|screamed in pain|multiple stab wounds|stabbed (him|her|them) (again|repeatedly)|bludgeoned|strangled to death)\b/i,
-    severity: "medium",
-    impact: "limited_ads",
-    policyName: "Trauma/Violence Intensity",
-    reason:
-      "Detected vivid trauma/violence phrasing that can increase age-restriction and monetization risk.",
+      "Detected unusually graphic bodily-detail phrasing that can reduce ad suitability.",
   },
 ];
 
@@ -113,11 +178,11 @@ function severityForProfanity(word: string): "low" | "medium" | "high" {
 
 function excerptAroundAddress(text: string): string {
   const WINDOW = 90;
-  for (const rx of ADDRESS_REGEXES) {
-    const match = text.match(rx);
-    if (!match || match.index === undefined) continue;
-    const start = Math.max(0, match.index - WINDOW);
-    const end = Math.min(text.length, match.index + match[0].length + WINDOW);
+  const address = extractStreetAddress(text);
+  if (address) {
+    const idx = text.toLowerCase().indexOf(address.toLowerCase());
+    const start = Math.max(0, idx - WINDOW);
+    const end = Math.min(text.length, idx + address.length + WINDOW);
     const prefix = start > 0 ? "..." : "";
     const suffix = end < text.length ? "..." : "";
     return `${prefix}${text.slice(start, end).trim()}${suffix}`;
@@ -135,7 +200,7 @@ export function heuristicPolicyFlags(script: string): PolicyFlag[] {
     const text = lines[i].trim();
     if (!text) continue;
 
-    if (ADDRESS_REGEXES.some((rx) => rx.test(text))) {
+    if (extractStreetAddress(text)) {
       const key = `addr:${lineNumber}`;
       if (!seen.has(key)) {
         seen.add(key);
@@ -157,25 +222,32 @@ export function heuristicPolicyFlags(script: string): PolicyFlag[] {
       }
     }
 
-    for (const { word, regex } of PROFANITY_REGEXES) {
-      if (!regex.test(text)) continue;
-      const key = `curse:${lineNumber}:${word}`;
+    const profanityHits = PROFANITY_REGEXES.filter(({ regex }) => regex.test(text));
+    const strongProfanityHits = profanityHits.filter(
+      ({ word }) => severityForProfanity(word) === "high"
+    );
+    if (
+      strongProfanityHits.length >= 2 ||
+      strongProfanityHits.some(
+        ({ word }) => word === "motherfucker" || word === "cunt"
+      )
+    ) {
+      const key = `curse:${lineNumber}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const severity = severityForProfanity(word);
       flags.push({
         line: lineNumber,
         text,
         category: "monetization",
-        severity,
+        severity: "medium",
         policyName: "Advertiser-Friendly Language",
         policyQuote:
           "Frequent or strong profanity can reduce ad suitability.",
-        impact: severity === "high" ? "limited_ads" : "full_ads",
+        impact: "limited_ads",
         saferRewrite:
           "Use toned-down language or bleep/remove the strongest profanity in narration.",
         reasoning:
-          `Detected explicit or censored profanity pattern ("${word}") in transcript text.`,
+          "Detected multiple strong profanity hits in a single line, which is more likely to matter than isolated quoted profanity.",
       });
     }
 
@@ -210,7 +282,7 @@ export function heuristicLegalFlags(script: string): LegalFlag[] {
     const lineNumber = i + 1;
     const text = lines[i].trim();
     if (!text) continue;
-    if (!ADDRESS_REGEXES.some((rx) => rx.test(text))) continue;
+    if (!extractStreetAddress(text)) continue;
     const excerpt = excerptAroundAddress(text);
 
     flags.push({
@@ -241,7 +313,17 @@ export function videoFindingsToPolicyFlags(
 
   for (const finding of findings) {
     for (const risk of finding.risks ?? []) {
-      if (risk.category === "privacy" && !hasStrongPrivacyEvidenceFromVideoRisk(risk)) {
+      const joined = `${risk.policyName} ${risk.reasoning} ${risk.detectedText ?? ""}`;
+      if (BLURRED_VISUAL_REGEX.test(joined) && risk.category !== "privacy") {
+        continue;
+      }
+      if (
+        PUBLIC_RECORD_TECHNICAL_REGEX.test(joined) &&
+        !hasHardYoutubePrivacyEvidenceFromVideoRisk(risk)
+      ) {
+        continue;
+      }
+      if (risk.category === "privacy" && !hasHardYoutubePrivacyEvidenceFromVideoRisk(risk)) {
         continue;
       }
 
@@ -291,7 +373,7 @@ export function videoFindingsToLegalFlags(
   for (const finding of findings) {
     for (const risk of finding.risks ?? []) {
       if (risk.category !== "privacy") continue;
-      if (!hasStrongPrivacyEvidenceFromVideoRisk(risk)) continue;
+      if (!hasHardLegalPrivacyEvidenceFromVideoRisk(risk)) continue;
       const text = `[Video ${finding.timecode}] ${risk.detectedText ?? "Sensitive visual detail"}`;
       const tokens = tokenSet(`${text} ${risk.reasoning} ${risk.policyName}`);
 

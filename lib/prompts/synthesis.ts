@@ -6,7 +6,16 @@ import type {
   CaseMetadata,
 } from "../pipeline/types";
 
-export const SYNTHESIS_SYSTEM = `You are a senior media law and content policy analyst producing the final review report for a true crime documentary script. You merge legal analysis, YouTube policy compliance, and case research into a clear, actionable verdict. Return ONLY valid JSON. Keep your response concise — do not repeat the full flags, just reference them.`;
+export const SYNTHESIS_SYSTEM = `You are the final review synthesizer for a true-crime documentary. Your job is to merge legal analysis, YouTube compliance, and case research into a practical report that reflects real-world publication risk.
+
+Calibrate to what typically matters in practice on YouTube:
+- Be lenient by default for standard true-crime narration and documentary framing.
+- Blurred/pixelated/redacted visuals are normally acceptable and should not be treated as major monetization issues.
+- Public-record screenshots, IP logs, timestamps, device strings, road names without a street number, and similar documentary artifacts are usually not top YouTube issues.
+- Do not let low-priority privacy hygiene concerns drive the monetization verdict.
+- Prioritize only issues that are materially likely to change publication outcome, demonetization outcome, or create severe legal exposure.
+
+Return ONLY valid JSON. Keep your response concise and do not repeat the full flags verbatim.`;
 
 export function buildSynthesisPrompt(
   script: string,
@@ -42,17 +51,32 @@ PARSED ENTITIES:
 ${JSON.stringify(parsed.entities, null, 2)}
 
 INSTRUCTIONS:
-0. Respect ANALYSIS MODE:
+0. Core calibration:
+   - Focus on what is materially likely to cause demonetization, age restriction, removal, or severe legal exposure for a standard true-crime documentary on YouTube.
+   - Standard true-crime narration should usually be treated as acceptable unless the provided flags show a concrete, serious problem.
+   - Blurred/pixelated/redacted visuals should NOT be treated as a major YouTube problem by themselves.
+   - Readable IP addresses, business-record metadata, timestamps, device strings, road names without a street number, and similar documentary/case-file details are not top YouTube issues. Only treat direct phone/email/full home address/government ID/account numbers or a clearly identifiable unblurred minor as serious privacy issues.
+   - Do not let minor privacy/legal hygiene issues drive the monetization verdict.
+1. Respect ANALYSIS MODE:
    - full: include both legal and monetization conclusions
    - legal_only: focus legal risk; keep monetization conservative based only on provided policy flags
    - monetization_only: focus YouTube/monetization; keep legal conservative based only on provided legal flags
-1. Cross-reference research with legal flags:
+2. Cross-reference research with legal flags:
    - If research confirms conviction → downgrade defamation risk for definitive labels
    - If only charges → upgrade risk for definitive language
    - Public figure confirmed → note actual malice standard
-2. Resolve conflicts between stages
-3. Produce the final structured report
-4. For criticalEdits and recommendedEdits, only include the TOP 10 most important — do not list every flag
+3. Resolve conflicts between stages:
+   - If monetization flags are weak but legal/privacy flags exist, keep monetization lenient and separate those concerns.
+   - Do not promote speculative or conditional concerns into critical status.
+4. Produce the final structured report
+5. For criticalEdits:
+   - Include ONLY 0-5 truly material issues.
+   - Prioritize issues likely to change publication outcome, demonetization outcome, or create severe legal exposure.
+   - Do NOT include repeated adjacent video incidents, speculative "if this person was a minor" issues, or low-priority cleanup items.
+6. For recommendedEdits:
+   - Include ONLY 0-5 useful but non-blocking improvements.
+   - Omit low-value nitpicks and repeated variants of the same issue.
+7. If there is no clear evidence of likely demonetization/removal, set monetization to full_ads and use publishable or borderline only if serious legal issues remain.
 
 Return this EXACT JSON structure:
 {

@@ -15,18 +15,20 @@ CRITICAL CALIBRATION FOR TRUE CRIME CONTENT:
 The following are NORMAL and ACCEPTABLE in true crime documentaries and should NOT be flagged:
 - Standard crime narration: "he was shot", "she was stabbed", "killed him", "murdered her", "strangled", "shooting him multiple times"
 - Describing cause of death: "gunshot wounds", "blunt force trauma", "strangulation"
-- Crime scene descriptions without gratuitous detail: "body was found", "buried in the backyard", "blood was found"
+- Crime scene descriptions without gratuitous sensory detail: "body was found", "buried in the backyard", "blood was found", "decomposing body"
 - Naming suspects, victims, and what they're accused of
 - Discussing arrests, charges, convictions, sentencing
 - Emotional narration about victims ("she was only 19", "a mother of three")
 - References to domestic violence, abuse patterns
 - Standard interrogation/bodycam/court footage descriptions
 - Discussing motive (financial, jealousy, revenge)
+- Isolated quoted profanity in police/interrogation footage, especially when it occurs later in the video rather than in the opening minute
+- Ordinary true-crime title language like "killer", "horrifying", "grave", or "burial site" unless the packaging is obviously exploitative or graphic
 
 ONLY flag content that would ACTUALLY cause problems on YouTube:
-- Extremely graphic/gratuitous violence descriptions (lingering on gore, decomposition details, torture methods step-by-step)
+- Extremely graphic/gratuitous violence descriptions (lingering on gore, rotting flesh, maggots, exposed bone, torture methods step-by-step)
 - Explicit sexual content or detailed sexual assault descriptions
-- Strong profanity (f-word, c-word, n-word) — especially if frequent or in title/thumbnail
+- Strong profanity when it is repeated heavily, used for shock, or appears in the title/thumbnail/opening
 - Detailed suicide methods (specific method + specific means)
 - Content that glorifies or promotes violence (not just describes it)
 - Real victim crime scene photos/footage shown without context warnings
@@ -37,6 +39,8 @@ ONLY flag content that would ACTUALLY cause problems on YouTube:
 IMPORTANT: You are reviewing the SCRIPT (narration/voiceover text) ONLY — NOT visuals, footage, or what might be shown on screen. The creator handles visual compliance separately. Do NOT flag script lines by imagining what visuals might accompany them. Do NOT cite policies about "showing" or "depicting" visuals — those don't apply to narration text. Only flag what the WORDS in the script actually say.
 
 Be VERY conservative with flags. If a line is standard true crime narration that thousands of channels use daily without issues, DO NOT FLAG IT. Only flag things that would genuinely surprise an experienced true crime creator by getting them demonetized or struck.
+Do NOT flag ordinary phrases like "decomposing body", "gruesome discovery", or "killer" by themselves. Those are usually fine unless the writing lingers on sensory gore or exploitative shock value.
+Do NOT treat later-in-video quoted profanity as an automatic age restriction. It should only be flagged when it is sustained, focal, and materially likely to change monetization in practice.
 
 ${POLICY_CONTEXT}`;
 
@@ -97,7 +101,7 @@ Return JSON array of flags. "line" MUST be the exact line number — NEVER null:
   "reasoning": "why this is flagged, citing policy"
 }]
 
-If no flags, return empty array []. For a typical well-made true crime script, expect 0-5 flags, not 10+.
+If no flags, return empty array []. For a typical well-made true crime script, expect 0-3 flags, not 10+.
 
 CRITICAL: Do NOT flag the same text multiple times. If the exact same line or very similar wording appears in multiple places in the script (e.g. repeated across draft versions), flag it ONCE at the first occurrence and note "same text also appears on lines X, Y, Z" in the reasoning. Every flag must be a DISTINCT issue.
 

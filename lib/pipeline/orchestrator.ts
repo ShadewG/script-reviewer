@@ -38,16 +38,22 @@ Ensure all strings are properly quoted and escaped.`;
 function deriveMonetizationFromPolicyFlags(
   policyFlags: PolicyFlag[]
 ): "full_ads" | "limited_ads" | "no_ads" {
-  if (policyFlags.length === 0) return "full_ads";
+  const monetizationRelevantFlags = policyFlags.filter(
+    (f) =>
+      f.category === "monetization" ||
+      f.category === "age_restriction" ||
+      f.category === "metadata"
+  );
+  if (monetizationRelevantFlags.length === 0) return "full_ads";
   if (
-    policyFlags.some(
+    monetizationRelevantFlags.some(
       (f) => f.impact === "no_ads" || f.impact === "removal_risk"
     )
   ) {
     return "no_ads";
   }
   if (
-    policyFlags.some(
+    monetizationRelevantFlags.some(
       (f) => f.impact === "limited_ads" || f.impact === "age_restricted"
     )
   ) {
@@ -205,6 +211,89 @@ function dedupeLegalFlags(flags: LegalFlag[]): LegalFlag[] {
   }
 
   return deduped;
+}
+
+type ReportEdit = SynthesisReport["criticalEdits"][number];
+
+function normalizeEditSignature(edit: ReportEdit): string {
+  return `${edit.original} ${edit.reason}`
+    .toLowerCase()
+    .replace(VIDEO_TEXT_PREFIX, "")
+    .replace(/\b\d{2}:\d{2}:\d{2}\b/g, " ")
+    .replace(/[^a-z\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function editPriority(edit: ReportEdit): number {
+  const joined = `${edit.original} ${edit.reason}`.toLowerCase();
+  let score = 0;
+
+  if (
+    /\b(removal risk|community guidelines|no-ads|no ads|age-restriction|age restriction|limited-ads|limited ads|monetization)\b/.test(
+      joined
+    )
+  ) {
+    score += 40;
+  }
+  if (
+    /\b(high defamation risk|defamation|false light|publication-blocking|severe legal)\b/.test(
+      joined
+    )
+  ) {
+    score += 30;
+  }
+  if (
+    /\b(phone number|email|full address|home address|social security|ssn|passport|driver's license|account number|unblurred minor|child safety)\b/.test(
+      joined
+    )
+  ) {
+    score += 25;
+  }
+  if (
+    /\b(ip address|device fingerprint|meta platforms|business record|geolocation|timestamp|license plate|aerial map|road\b|privacy complaint)\b/.test(
+      joined
+    )
+  ) {
+    score -= 35;
+  }
+  if (
+    /\bblurred|pixelated|redacted|obscured|censored\b/.test(joined) &&
+    !/\bunblurred\b/.test(joined)
+  ) {
+    score -= 40;
+  }
+  if (
+    /\bif this person was a minor|confirm age|verify consent|minor risk|easy fix|optional\b/.test(
+      joined
+    )
+  ) {
+    score -= 25;
+  }
+
+  return score;
+}
+
+function normalizeReportEdits(
+  edits: ReportEdit[],
+  { maxItems, dropLowPriority }: { maxItems: number; dropLowPriority: boolean }
+): ReportEdit[] {
+  const ranked = edits
+    .map((edit) => ({ edit, score: editPriority(edit) }))
+    .sort((a, b) => b.score - a.score);
+  const seen = new Set<string>();
+  const normalized: ReportEdit[] = [];
+
+  for (const { edit, score } of ranked) {
+    if (dropLowPriority && score < 0) continue;
+    const signature = normalizeEditSignature(edit);
+    if (!signature || seen.has(signature)) continue;
+    seen.add(signature);
+    normalized.push(edit);
+    if (normalized.length >= maxItems) break;
+  }
+
+  return normalized;
 }
 
 function safeJsonParse<T>(text: string): T {
@@ -484,6 +573,14 @@ export async function runPipeline(
     // Inject the actual flags (prompt told Claude to return empty arrays to save tokens)
     report.legalFlags = legalFlags;
     report.policyFlags = policyFlags;
+    report.criticalEdits = normalizeReportEdits(report.criticalEdits ?? [], {
+      maxItems: 5,
+      dropLowPriority: true,
+    });
+    report.recommendedEdits = normalizeReportEdits(report.recommendedEdits ?? [], {
+      maxItems: 5,
+      dropLowPriority: false,
+    });
     report.videoTimeline = (metadata.videoFindings ?? []).filter(
       (f) => Array.isArray(f.risks) && f.risks.length > 0
     );
