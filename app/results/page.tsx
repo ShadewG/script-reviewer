@@ -8,6 +8,34 @@ import AnnotatedScriptView from "./components/AnnotatedScriptView";
 import type { VideoFrameFinding } from "@/lib/pipeline/types";
 import { YT_POLICIES } from "@/lib/policies/youtube-policies";
 
+/* ── Label formatting ── */
+function formatLabel(s: string): string {
+  return s
+    .replace(/^(legal|policy):/, "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/* ── Smart text excerpt ── */
+function smartExcerpt(text: string, maxLen: number, targetLine?: number): string {
+  if (text.length <= maxLen) return text;
+  if (targetLine != null) {
+    const lines = text.split("\n");
+    const idx = Math.max(0, targetLine - 1);
+    if (idx < lines.length) {
+      const targetText = lines[idx];
+      const pos = text.indexOf(targetText);
+      if (pos >= 0) {
+        const start = Math.max(0, pos - 40);
+        const end = Math.min(text.length, pos + targetText.length + 40);
+        const excerpt = text.slice(start, end);
+        return (start > 0 ? "..." : "") + excerpt.slice(0, maxLen - 6) + (end < text.length ? "..." : "");
+      }
+    }
+  }
+  return text.slice(0, maxLen - 1) + "\u2026";
+}
+
 /* ── Severity utilities ── */
 type Severity = "low" | "medium" | "high" | "severe";
 const SEV_ORDER: Record<string, number> = { low: 0, medium: 1, high: 2, severe: 3 };
@@ -518,6 +546,8 @@ function ResultsContent() {
   const [expandedVideoSet, setExpandedVideoSet] = useState<Set<number>>(new Set());
   const [minSeverity, setMinSeverity] = useState<Severity>("low");
   const [flagFilter, setFlagFilter] = useState<"all" | "legal" | "policy">("all");
+  const [expandedYtFlags, setExpandedYtFlags] = useState<Set<string>>(new Set());
+  const [summaryExpanded, setSummaryExpanded] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -738,24 +768,50 @@ function ResultsContent() {
                 {report.verdict.replaceAll("_", " ")}
               </span>
             </div>
-            <div className="text-right">
+            <div className="flex items-center gap-3">
               <div className="text-3xl font-bold text-[var(--text-bright)]">
                 {report.riskScore}
               </div>
-              <div className="text-[10px] text-[var(--text-dim)] uppercase">Risk Score</div>
-              {/* Risk score bar */}
-              <div className="w-24 h-1.5 bg-[var(--bg-surface)] mt-1 ml-auto">
-                <div
-                  className="h-full transition-all"
-                  style={{
-                    width: `${Math.min(100, Math.max(0, report.riskScore))}%`,
-                    background: riskBarColor(report.riskScore),
-                  }}
-                />
-              </div>
+              <div className="text-[10px] text-[var(--text-dim)] uppercase">/ 100</div>
             </div>
           </div>
-          <p className="text-sm mt-3 text-[var(--text)] leading-relaxed">{report.summary}</p>
+          <div className="mt-3">
+            <p className={`text-sm text-[var(--text)] leading-relaxed ${!summaryExpanded ? "line-clamp-3" : ""}`}>
+              {report.summary}
+            </p>
+            {report.summary.length > 200 && (
+              <button
+                onClick={() => setSummaryExpanded(!summaryExpanded)}
+                className="text-[10px] text-[var(--text-dim)] hover:text-[var(--text)] underline mt-1"
+              >
+                {summaryExpanded ? "Show less" : "Show more"}
+              </button>
+            )}
+          </div>
+          {/* Full-width risk score bar with threshold markers */}
+          <div className="relative w-full h-2 bg-[var(--bg-surface)] mt-3">
+            <div
+              className="h-full transition-all"
+              style={{
+                width: `${Math.min(100, Math.max(0, report.riskScore))}%`,
+                background: riskBarColor(report.riskScore),
+              }}
+            />
+            {[30, 60, 80].map((t) => (
+              <div
+                key={t}
+                className="absolute top-0 h-full w-px bg-[var(--text-dim)] opacity-30"
+                style={{ left: `${t}%` }}
+              />
+            ))}
+          </div>
+          <div className="relative w-full text-[8px] text-[var(--text-dim)] mt-0.5 h-3">
+            <span className="absolute left-0">0</span>
+            <span className="absolute" style={{ left: "30%", transform: "translateX(-50%)" }}>30</span>
+            <span className="absolute" style={{ left: "60%", transform: "translateX(-50%)" }}>60</span>
+            <span className="absolute" style={{ left: "80%", transform: "translateX(-50%)" }}>80</span>
+            <span className="absolute right-0">100</span>
+          </div>
         </div>
       )}
 
@@ -765,7 +821,7 @@ function ResultsContent() {
           {Object.entries(report.riskDashboard).map(([key, val]) => (
             <div key={key} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 text-center">
               <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-2">
-                {key.replace(/([A-Z])/g, " $1").trim()}
+                {formatLabel(key.replace(/([A-Z])/g, "_$1"))}
               </div>
               <div
                 className="text-sm uppercase font-bold"
@@ -778,7 +834,8 @@ function ResultsContent() {
         </div>
       )}
 
-      {/* Tabs */}
+      {/* Tabs + Severity Filter — sticky container */}
+      <div className="sticky top-0 z-20 bg-[var(--bg)]">
       <div className="flex gap-0 border-b border-[var(--border)] mb-0">
         {(["overview", "video", "script", "legal", "youtube", "research", "raw"] as const).map((tab) => {
           const count = tabCounts[tab];
@@ -828,6 +885,7 @@ function ResultsContent() {
         </div>
       )}
       {!showSeverityFilter && <div className="mb-4" />}
+      </div>{/* end sticky container */}
 
       {/* Tab Content */}
       <div className="min-h-[400px]">
@@ -907,6 +965,14 @@ function ResultsContent() {
               <section>
                 <h3 className="text-xs uppercase tracking-wider text-[var(--amber)] mb-3 flex items-center gap-2">
                   <span className="w-2 h-2 bg-[var(--amber)]" /> Risky Lines
+                  {riskyLines.length > 30 && (
+                    <span className="text-[10px] text-[var(--text-dim)] font-normal normal-case tracking-normal ml-2">
+                      Showing 30 of {riskyLines.length} —{" "}
+                      <button onClick={() => setActiveTab("script")} className="underline hover:text-[var(--text)]">
+                        view all in Script tab
+                      </button>
+                    </span>
+                  )}
                 </h3>
                 <div className="space-y-2">
                   {riskyLines.slice(0, 30).map((item) => (
@@ -917,7 +983,7 @@ function ResultsContent() {
                         </span>
                         {item.tags.map((tag) => (
                           <span key={tag} className="text-[10px] text-[var(--text-dim)] uppercase border border-[var(--border)] px-1">
-                            {tag.replace(":", " ")}
+                            {formatLabel(tag)}
                           </span>
                         ))}
                       </div>
@@ -932,7 +998,7 @@ function ResultsContent() {
               <section>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-xs uppercase tracking-wider text-[var(--amber)] flex items-center gap-2">
-                    <span className="w-2 h-2 bg-[var(--amber)]" /> Video Moments (Dropdown)
+                    <span className="w-2 h-2 bg-[var(--amber)]" /> Video Timeline
                   </h3>
                   <button
                     onClick={() => setActiveTab("video")}
@@ -951,7 +1017,6 @@ function ResultsContent() {
                     return (
                       <details
                         key={`${item.timecode}-${i}`}
-                        open={i < 2}
                         className="border border-[var(--border)] bg-[var(--bg-surface)]"
                       >
                         <summary className="list-none cursor-pointer px-3 py-2 flex items-center gap-3 hover:bg-[var(--bg-elevated)]">
@@ -1118,11 +1183,13 @@ function ResultsContent() {
         {activeTab === "video" && (
           <div>
             {filteredVideoTimeline.length === 0 ? (
-              <p className="text-sm text-[var(--text-dim)]">
-                {videoTimeline.length === 0
-                  ? "No video timeline findings for this report."
-                  : "All video findings hidden by severity filter."}
-              </p>
+              <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-8 text-center">
+                <p className="text-sm text-[var(--text-dim)]">
+                  {videoTimeline.length === 0
+                    ? "No video timeline findings for this report."
+                    : "All video findings hidden by severity filter."}
+                </p>
+              </div>
             ) : (
               <>
                 <div className="flex items-center gap-3 mb-4">
@@ -1253,9 +1320,11 @@ function ResultsContent() {
             )}
 
             {filteredLegalFlags.length === 0 ? (
-              <p className="text-xs text-[var(--text-dim)]">
-                {allLegalFlags.length === 0 ? "No legal flags identified." : "All legal flags hidden by severity filter."}
-              </p>
+              <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-8 text-center">
+                <p className="text-xs text-[var(--text-dim)]">
+                  {allLegalFlags.length === 0 ? "No legal flags identified." : "All legal flags hidden by severity filter."}
+                </p>
+              </div>
             ) : (
               filteredLegalFlags.map((flag: LegalFlag, i: number) => {
                 const isCrossValidated = "agreementCount" in flag;
@@ -1273,7 +1342,7 @@ function ResultsContent() {
                         {flag.severity}
                       </span>
                       <span className="text-[10px] text-[var(--text-dim)] uppercase">
-                        {flag.riskType.replaceAll("_", " ")}
+                        {formatLabel(flag.riskType)}
                       </span>
                       <span className="text-[10px] text-[var(--text-dim)]">
                         — {flag.person}
@@ -1305,7 +1374,7 @@ function ResultsContent() {
                     {flag.stateCitation && (
                       <div className="text-xs text-[var(--text-dim)]">Cite: {flag.stateCitation}</div>
                     )}
-                    <div className="text-sm text-[var(--green)] mt-2">Safer: {flag.saferRewrite}</div>
+                    <div className="text-sm text-[var(--green)] mt-2 border border-[var(--border)] bg-[var(--bg)] p-2">Safer: {flag.saferRewrite}</div>
                     {cv && (
                       <div className="mt-2 pt-2 border-t border-[var(--border)]">
                         <div className="text-[10px] text-[var(--text-dim)] uppercase mb-1">Per-Model Severity</div>
@@ -1348,7 +1417,7 @@ function ResultsContent() {
                       }`}
                       title={p.name}
                     >
-                      {p.name.length > 28 ? p.name.slice(0, 26) + "..." : p.name}
+                      {p.name}
                     </span>
                   );
                 })}
@@ -1356,7 +1425,7 @@ function ResultsContent() {
             </div>
 
             {filteredPolicyFlags.length === 0 ? (
-              <div className="space-y-2">
+              <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-8 text-center space-y-2">
                 <p className="text-xs text-[var(--text-dim)]">
                   {allPolicyFlags.length === 0 ? "No YouTube policy flags identified." : "All policy flags hidden by severity filter."}
                 </p>
@@ -1368,41 +1437,63 @@ function ResultsContent() {
                 )}
               </div>
             ) : (
-              filteredPolicyFlags.map((flag: PolicyFlag, i: number) => (
-                <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
-                  <div className="flex items-center gap-2 mb-2 flex-wrap">
-                    <span className="w-2 h-2" style={{ background: sevColor(flag.severity) }} />
-                    <span className="text-xs uppercase" style={{ color: sevColor(flag.severity) }}>
-                      {flag.severity}
-                    </span>
-                    <span className="text-[10px] text-[var(--text-dim)] uppercase">
-                      {flag.category.replace(/_/g, " ")}
-                    </span>
-                    {flag.line && (
-                      <span className="text-[10px] text-[var(--text-dim)] border border-[var(--border)] px-1">
-                        L{flag.line}
+              filteredPolicyFlags.map((flag: PolicyFlag, i: number) => {
+                const contentKey = `${flag.line ?? "na"}-${flag.category}-${i}`;
+                const isLong = flag.text.length > 300;
+                const isExpanded = expandedYtFlags.has(contentKey);
+                const displayText = isLong && !isExpanded
+                  ? smartExcerpt(flag.text, 300, flag.line)
+                  : flag.text;
+                return (
+                  <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+                    <div className="flex items-center gap-2 mb-2 flex-wrap">
+                      <span className="w-2 h-2" style={{ background: sevColor(flag.severity) }} />
+                      <span className="text-xs uppercase" style={{ color: sevColor(flag.severity) }}>
+                        {flag.severity}
                       </span>
+                      <span className="text-[10px] text-[var(--text-dim)] uppercase">
+                        {formatLabel(flag.category)}
+                      </span>
+                      {flag.line && (
+                        <span className="text-[10px] text-[var(--text-dim)] border border-[var(--border)] px-1">
+                          L{flag.line}
+                        </span>
+                      )}
+                      <span
+                        className="text-[10px] uppercase px-1 border"
+                        style={{
+                          color: riskColor(flag.impact),
+                          borderColor: riskColor(flag.impact),
+                        }}
+                      >
+                        {flag.impact.replaceAll("_", " ")}
+                      </span>
+                    </div>
+                    <div className="text-sm text-[var(--text)] mb-1.5 leading-relaxed">
+                      &quot;{displayText}&quot;
+                      {isLong && (
+                        <button
+                          onClick={() => setExpandedYtFlags(prev => {
+                            const next = new Set(prev);
+                            if (next.has(contentKey)) next.delete(contentKey); else next.add(contentKey);
+                            return next;
+                          })}
+                          className="ml-2 text-[10px] text-[var(--text-dim)] hover:text-[var(--text)] underline"
+                        >
+                          {isExpanded ? "Show less" : "Show more"}
+                        </button>
+                      )}
+                    </div>
+                    <div className="text-sm text-[var(--text-dim)] mb-1.5 whitespace-pre-wrap leading-relaxed">{flag.reasoning}</div>
+                    {flag.policyQuote && (
+                      <div className="text-xs text-[var(--text-dim)] italic">Policy: {flag.policyQuote}</div>
                     )}
-                    <span
-                      className="text-[10px] uppercase px-1 border"
-                      style={{
-                        color: riskColor(flag.impact),
-                        borderColor: riskColor(flag.impact),
-                      }}
-                    >
-                      {flag.impact.replaceAll("_", " ")}
-                    </span>
+                    {flag.saferRewrite && (
+                      <div className="text-sm text-[var(--green)] mt-2 border border-[var(--border)] bg-[var(--bg)] p-2">Safer: {flag.saferRewrite}</div>
+                    )}
                   </div>
-                  <div className="text-sm text-[var(--text)] mb-1.5 leading-relaxed">&quot;{flag.text}&quot;</div>
-                  <div className="text-sm text-[var(--text-dim)] mb-1.5 leading-relaxed">{flag.reasoning}</div>
-                  {flag.policyQuote && (
-                    <div className="text-xs text-[var(--text-dim)] italic">Policy: {flag.policyQuote}</div>
-                  )}
-                  {flag.saferRewrite && (
-                    <div className="text-sm text-[var(--green)] mt-2">Safer: {flag.saferRewrite}</div>
-                  )}
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         )}
@@ -1410,11 +1501,26 @@ function ResultsContent() {
         {activeTab === "research" && (
           <div className="space-y-4">
             {data.researchData ? (
-              <pre className="text-xs text-[var(--text)] bg-[var(--bg-surface)] border border-[var(--border)] p-4 overflow-auto max-h-[600px] whitespace-pre-wrap">
-                {JSON.stringify(data.researchData, null, 2)}
-              </pre>
+              <div className="space-y-3">
+                {Object.entries(data.researchData).map(([key, val]) => (
+                  <div key={key} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+                    <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-2">
+                      {formatLabel(key)}
+                    </div>
+                    {typeof val === "string" ? (
+                      <p className="text-sm text-[var(--text)] whitespace-pre-wrap leading-relaxed">{val}</p>
+                    ) : (
+                      <pre className="text-xs text-[var(--text)] overflow-auto max-h-[400px] whitespace-pre-wrap">
+                        {JSON.stringify(val, null, 2)}
+                      </pre>
+                    )}
+                  </div>
+                ))}
+              </div>
             ) : (
-              <p className="text-xs text-[var(--text-dim)]">No research data available.</p>
+              <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-8 text-center">
+                <p className="text-xs text-[var(--text-dim)]">No research data available.</p>
+              </div>
             )}
           </div>
         )}
