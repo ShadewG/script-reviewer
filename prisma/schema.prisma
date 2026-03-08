@@ -69,6 +69,7 @@ model Review {
 
   scriptTitle   String?
   scriptText    String
+  videoTranscript String?
   sourceUrl     String?  // Google Docs URL if imported
   caseState     String
   caseStatus    String  // convicted, charged, suspect, acquitted, unsolved
@@ -79,6 +80,7 @@ model Review {
 
   // Supplemental documentation (police reports, etc.)
   supplementalDocs    Json?   // DocumentFacts[] extracted from uploaded docs
+  videoFindings       Json?   // persisted frame findings incl. thumbnails for reload/resume
 
   // Stage outputs
   parsedEntities      Json?
@@ -86,7 +88,9 @@ model Review {
   legalCrossValidation Json?  // raw per-model results for audit
   youtubeFlags        Json?
   researchData        Json?
+  factCheckData       Json?
   synthesis           Json?
+  analysisWarnings    Json?   // string[]
 
   status    String @default("pending") // pending, processing, completed, failed
   error     String?
@@ -94,4 +98,55 @@ model Review {
   riskScore Int?    // 0-100
 
   @@map("reviews")
+}
+
+model StageLog {
+  id           String   @id @default(cuid())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  reviewId     String
+  stage        String
+  model        String?
+  status       String
+  durationMs   Int?
+  inputTokens  Int?
+  outputTokens Int?
+  promptHash   String?
+  cacheHit     Boolean  @default(false)
+  metadata     Json?
+
+  @@index([reviewId, stage, createdAt])
+  @@map("stage_logs")
+}
+
+model ResearchCache {
+  id             String   @id @default(cuid())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  cacheKey       String   @unique
+  caseState      String
+  caseStatus     String?
+  normalizedPeople Json
+  queryCount     Int
+  queries        Json
+  rawResults     Json
+  synthesized    Json?
+  expiresAt      DateTime
+
+  @@index([expiresAt])
+  @@map("research_cache")
+}
+
+model FailedAnalysis {
+  id         String   @id @default(cuid())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  reviewId   String?
+  stage      String?
+  error      String
+  details    Json?
+  resolvedAt DateTime?
+
+  @@index([reviewId, createdAt])
+  @@map("failed_analyses")
 }

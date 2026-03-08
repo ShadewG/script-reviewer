@@ -1,4 +1,9 @@
-import type { ParsedScript, ResearchFindings, CaseMetadata } from "../pipeline/types";
+import type {
+  ParsedScript,
+  ResearchFindings,
+  CaseMetadata,
+  FactCheckReport,
+} from "../pipeline/types";
 import type { DocumentFacts } from "../documents/types";
 import { numberLines } from "../utils/line-numbers";
 
@@ -75,11 +80,16 @@ export function buildLegalPrompt(
   metadata: CaseMetadata,
   stateLaw: Record<string, unknown>,
   research?: ResearchFindings,
-  documentFacts?: DocumentFacts[]
+  documentFacts?: DocumentFacts[],
+  factCheck?: FactCheckReport | null
 ): string {
   const docsSection = documentFacts?.length
     ? buildDocumentFactsSection(documentFacts)
     : "";
+  const factCheckSection =
+    factCheck && factCheck.findings.length > 0
+      ? `FACT CHECK FINDINGS:\n${JSON.stringify(factCheck, null, 2)}`
+      : "NO FACT CHECK FINDINGS AVAILABLE";
 
   return `Analyze this crime documentary script for defamation and privacy tort risk.
 
@@ -97,6 +107,7 @@ PARSED CLAIMS:
 ${JSON.stringify(parsed.claims, null, 2)}
 
 ${research ? `CASE RESEARCH FINDINGS:\n${JSON.stringify(research, null, 2)}` : "NO CASE RESEARCH AVAILABLE"}
+${factCheckSection}
 ${docsSection}
 
 For EACH named individual, evaluate:

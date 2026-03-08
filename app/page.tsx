@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import type { DocumentFacts } from "@/lib/documents/types";
 import type { VideoFrameFinding } from "@/lib/pipeline/types";
 import { useTheme } from "@/lib/theme";
+import { useOnboarding, OnboardingOverlay } from "@/lib/onboarding";
 
 const US_STATES = [
   "Alabama","Alaska","Arizona","Arkansas","California","Colorado","Connecticut",
@@ -130,6 +131,7 @@ const STAGE_ESTIMATES: Record<number, number> = { 0: 5, 1: 20, 2: 10, 3: 25, 4: 
 export default function Home() {
   const router = useRouter();
   const { theme, toggle: toggleTheme } = useTheme();
+  const onboarding = useOnboarding("homepage");
   const [inputMode, setInputMode] = useState<"paste" | "gdoc">("paste");
   const [script, setScript] = useState("");
   const [gdocUrl, setGdocUrl] = useState("");
@@ -652,7 +654,7 @@ export default function Home() {
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {/* Left: Script Input */}
-        <div className="md:col-span-2">
+        <div className="md:col-span-2" data-tour="script-input">
           {/* Input Mode Toggle */}
           <div className="flex items-center gap-0 mb-3">
             <button
@@ -732,7 +734,7 @@ export default function Home() {
         </div>
 
         {/* Right: Metadata */}
-        <div className="space-y-4">
+        <div className="space-y-4" data-tour="metadata">
           <div>
             <label className="text-xs text-[var(--text-dim)] uppercase tracking-wider mb-2 block">
               Jurisdiction
@@ -981,6 +983,7 @@ export default function Home() {
           </div>
 
           <button
+            data-tour="analyze-btn"
             onClick={handleSubmit}
             disabled={running || uploading || videoUploading || videoTranscribing || !currentScript.trim()}
             className="w-full py-3 text-sm uppercase tracking-widest border border-[var(--border)] text-[var(--text-bright)] bg-[var(--bg-surface)] hover:bg-[var(--bg-elevated)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
@@ -1058,6 +1061,15 @@ export default function Home() {
           )}
         </div>
       </div>
+
+      <OnboardingOverlay
+        active={onboarding.active}
+        currentStep={onboarding.currentStep}
+        step={onboarding.step}
+        total={onboarding.steps.length}
+        onNext={onboarding.next}
+        onSkip={onboarding.skip}
+      />
     </div>
   );
 }

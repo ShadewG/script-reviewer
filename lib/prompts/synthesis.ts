@@ -4,6 +4,7 @@ import type {
   PolicyFlag,
   ResearchFindings,
   CaseMetadata,
+  FactCheckReport,
 } from "../pipeline/types";
 
 export const SYNTHESIS_SYSTEM = `You are the final review synthesizer for a true-crime documentary. Your job is to merge legal analysis, YouTube compliance, and case research into a practical report that reflects real-world publication risk.
@@ -23,7 +24,8 @@ export function buildSynthesisPrompt(
   legalFlags: LegalFlag[],
   policyFlags: PolicyFlag[],
   research: ResearchFindings | null,
-  metadata: CaseMetadata
+  metadata: CaseMetadata,
+  factCheck: FactCheckReport | null
 ): string {
   // Truncate script to first 200 lines for context (flags already have the specific text)
   const scriptLines = script.split("\n");
@@ -47,6 +49,9 @@ ${JSON.stringify(policyFlags, null, 2)}
 RESEARCH FINDINGS:
 ${research ? JSON.stringify(research, null, 2) : "Not available"}
 
+FACT CHECK FINDINGS:
+${factCheck ? JSON.stringify(factCheck, null, 2) : "Not available"}
+
 PARSED ENTITIES:
 ${JSON.stringify(parsed.entities, null, 2)}
 
@@ -65,6 +70,7 @@ INSTRUCTIONS:
    - If research confirms conviction → downgrade defamation risk for definitive labels
    - If only charges → upgrade risk for definitive language
    - Public figure confirmed → note actual malice standard
+   - If fact checks contradict a script claim, treat that as a material legal issue even if the rest of the script is acceptable.
 3. Resolve conflicts between stages:
    - If monetization flags are weak but legal/privacy flags exist, keep monetization lenient and separate those concerns.
    - Do not promote speculative or conditional concerns into critical status.

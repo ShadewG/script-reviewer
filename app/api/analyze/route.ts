@@ -124,6 +124,14 @@ function normalizeScriptForAnalysis(input: string): string {
   return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+function extractVideoTranscript(input: string): string | undefined {
+  const marker = "\n\n--- VIDEO TRANSCRIPT ---\n\n";
+  const idx = input.indexOf(marker);
+  if (idx === -1) return undefined;
+  const transcript = input.slice(idx + marker.length).trim();
+  return transcript || undefined;
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.json();
   const {
@@ -137,6 +145,7 @@ export async function POST(req: NextRequest) {
     thumbnailDesc,
     documentFacts,
     videoFindings,
+    videoTranscript: rawVideoTranscript,
     analysisMode,
   } = body;
 
@@ -220,13 +229,25 @@ export async function POST(req: NextRequest) {
     footageTypes: footageTypes ?? [],
     videoTitle,
     thumbnailDesc,
+    videoTranscript:
+      typeof rawVideoTranscript === "string" && rawVideoTranscript.trim()
+        ? rawVideoTranscript.trim()
+        : extractVideoTranscript(script),
     analysisMode: parsedAnalysisMode.data ?? "full",
     documentFacts: validatedFacts,
     videoFindings: validatedVideoFindings,
   };
 
+  // Derive a title from the first meaningful line of the script
+  const derivedTitle = script
+    .split("\n")
+    .map((l: string) => l.trim())
+    .find((l: string) => l.length > 0 && l.length <= 200)
+    ?.slice(0, 120) || null;
+
   const review = await prisma.review.create({
     data: {
+      scriptTitle: videoTitle || derivedTitle,
       scriptText: script,
       sourceUrl,
       caseState: state,
@@ -235,7 +256,9 @@ export async function POST(req: NextRequest) {
       footageTypes: metadata.footageTypes,
       videoTitle,
       thumbnailDesc,
+      videoTranscript: metadata.videoTranscript,
       supplementalDocs: validatedFacts as never ?? undefined,
+      videoFindings: validatedVideoFindings as never ?? undefined,
       status: "processing",
     },
   });

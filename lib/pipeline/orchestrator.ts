@@ -1,11 +1,9 @@
 import {
-  callGPTMini,
-  callGPT,
   callGPTMiniDetailed,
   callGPTDetailed,
 } from "../ai/openai";
-import { callClaude, callClaudeDetailed } from "../ai/anthropic";
-import { callSonar, callSonarDetailed } from "../ai/perplexity";
+import { callClaudeDetailed } from "../ai/anthropic";
+import { callSonarDetailed } from "../ai/perplexity";
 import { hashPrompt } from "../ai/shared";
 import { searchDockets } from "../ai/courtlistener";
 import { PARSER_SYSTEM, buildParserPrompt } from "../prompts/parser";
@@ -31,7 +29,6 @@ import {
 } from "./heuristics";
 import { prisma } from "../db";
 import {
-  appendReviewWarning,
   buildResearchCacheKey,
   getCachedResearch,
   getResearchIdentity,
@@ -348,20 +345,24 @@ function safeJsonParse<T>(text: string): T {
   }
 }
 
-async function parseSynthesisResponse(text: string): Promise<SynthesisReport> {
+async function parseJsonWithRepair<T>(text: string): Promise<T> {
   try {
-    return safeJsonParse<SynthesisReport>(text);
+    return safeJsonParse<T>(text);
   } catch (parseErr) {
-    const repaired = await callGPTMini(
+    const repaired = await callGPTDetailed(
       SYNTHESIS_REPAIR_SYSTEM,
       `Repair this malformed JSON so it parses strictly:\n\n${text}`
     );
     try {
-      return safeJsonParse<SynthesisReport>(repaired);
+      return safeJsonParse<T>(repaired.text);
     } catch {
       throw parseErr;
     }
   }
+}
+
+async function parseSynthesisResponse(text: string): Promise<SynthesisReport> {
+  return parseJsonWithRepair<SynthesisReport>(text);
 }
 
 function isParsedScript(value: unknown): value is ParsedScript {
@@ -428,7 +429,7 @@ async function runFactCheckStage(args: {
   const initialPromptHash = hashPrompt(FACT_CHECK_SYSTEM, initialPrompt);
   const factCheckStart = Date.now();
   const initial = await callGPTMiniDetailed(FACT_CHECK_SYSTEM, initialPrompt);
-  let report = safeJsonParse<FactCheckReport>(initial.text);
+  let report = await parseJsonWithRepair<FactCheckReport>(initial.text);
   await recordStageLog({
     reviewId,
     stage: "fact_check",
@@ -477,7 +478,7 @@ async function runFactCheckStage(args: {
     const finalPromptHash = hashPrompt(FACT_CHECK_SYSTEM, finalPrompt);
     const finalStart = Date.now();
     const finalResult = await callGPTMiniDetailed(FACT_CHECK_SYSTEM, finalPrompt);
-    report = safeJsonParse<FactCheckReport>(finalResult.text);
+    report = await parseJsonWithRepair<FactCheckReport>(finalResult.text);
     await recordStageLog({
       reviewId,
       stage: "fact_check_finalize",
@@ -536,9 +537,10 @@ export async function runPipeline(
   };
 
   const warnings = asStringArray(review.analysisWarnings);
-  const addWarning = async (warning: string) => {
-    warnings.push(warning);
-    await appendReviewWarning(reviewId, warning);
+  const addWarning = (warning: string) => {
+    if (!warnings.includes(warning)) {
+      warnings.push(warning);
+    }
   };
 
   if (review.status === "completed" && review.synthesis) {
@@ -557,7 +559,7 @@ export async function runPipeline(
       const promptHash = hashPrompt(PARSER_SYSTEM, parserPrompt);
       const startedAt = Date.now();
       const parseResult = await callGPTMiniDetailed(PARSER_SYSTEM, parserPrompt);
-      parsed = safeJsonParse<ParsedScript>(parseResult.text);
+      parsed = await parseJsonWithRepair<ParsedScript>(parseResult.text);
       await prisma.review.update({
         where: { id: reviewId },
         data: { parsedEntities: parsed as never },
@@ -610,7 +612,7 @@ export async function runPipeline(
     const promptHash = hashPrompt(YOUTUBE_SYSTEM, prompt);
     const startedAt = Date.now();
     const ytResult = await callGPTDetailed(YOUTUBE_SYSTEM, prompt);
-    const rawFlags = safeJsonParse<PolicyFlag[]>(ytResult.text);
+    const rawFlags = await parseJsonWithRepair<PolicyFlag[]>(ytResult.text);
     const finalFlags = dedupePolicyFlags(
       mergePolicyFlags(
         mergePolicyFlags(rawFlags, heuristicPolicyFlags(script)),
@@ -721,7 +723,7 @@ export async function runPipeline(
     const promptHash = hashPrompt(RESEARCH_SYNTHESIS_SYSTEM, synthPrompt);
     const startedAt = Date.now();
     const synthResult = await callGPTDetailed(RESEARCH_SYNTHESIS_SYSTEM, synthPrompt);
-    const findings = safeJsonParse<ResearchFindings>(synthResult.text);
+    const findings = await parseJsonWithRepair<ResearchFindings>(synthResult.text);
     await prisma.review.update({
       where: { id: reviewId },
       data: { researchData: findings as never },
@@ -784,7 +786,7 @@ export async function runPipeline(
     youtubeResult.status === "fulfilled" ? youtubeResult.value : [];
   if (youtubeResult.status === "rejected") {
     const error = String(youtubeResult.reason);
-    await addWarning(`YouTube policy stage degraded: ${error}`);
+    addWarning(`YouTube policy stage degraded: ${error}`);
     await recordFailedAnalysis({
       reviewId,
       stage: "youtube_policy",
@@ -812,7 +814,7 @@ export async function runPipeline(
     researchResult.status === "fulfilled" ? researchResult.value : null;
   if (researchResult.status === "rejected") {
     const error = String(researchResult.reason);
-    await addWarning(`Case research stage degraded: ${error}`);
+    addWarning(`Case research stage degraded: ${error}`);
     await recordFailedAnalysis({
       reviewId,
       stage: "research",
@@ -840,7 +842,7 @@ export async function runPipeline(
       });
     } catch (err) {
       const error = String(err);
-      await addWarning(`Fact-check stage degraded: ${error}`);
+      addWarning(`Fact-check stage degraded: ${error}`);
       await recordFailedAnalysis({
         reviewId,
         stage: "fact_check",
@@ -891,7 +893,7 @@ export async function runPipeline(
           );
         legalFlags = flags;
         for (const warning of legalWarnings) {
-          await addWarning(warning);
+          addWarning(warning);
         }
         for (const audit of audits) {
           await recordStageLog({
@@ -923,7 +925,13 @@ export async function runPipeline(
         emit({ stage: 1, name: "Legal Review (Cross-Check)", status: "complete", data: legalFlags });
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Legal review failed";
-        await addWarning(`Legal review stage degraded: ${msg}`);
+        addWarning(`Legal review stage degraded: ${msg}`);
+        await recordStageLog({
+          reviewId,
+          stage: "legal_review",
+          status: "error",
+          metadata: { error: msg },
+        });
         await recordFailedAnalysis({
           reviewId,
           stage: "legal_review",
@@ -993,7 +1001,7 @@ export async function runPipeline(
       });
     } catch (claudeErr) {
       const warning = `Synthesis fallback: Claude failed and GPT was used instead. ${String(claudeErr)}`;
-      await addWarning(warning);
+      addWarning(warning);
       const startedAt = Date.now();
       const fallbackResult = await callGPTDetailed(SYNTHESIS_SYSTEM, synthesisPrompt);
       report = await parseSynthesisResponse(fallbackResult.text);

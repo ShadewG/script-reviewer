@@ -1,5 +1,5 @@
-import { callClaude } from "../ai/anthropic";
-import { callGPT } from "../ai/openai";
+import { callClaudeDetailed } from "../ai/anthropic";
+import { callGPTDetailed } from "../ai/openai";
 import {
   LEGAL_SYSTEM,
   buildLegalPrompt,
@@ -9,6 +9,7 @@ import type {
   CaseMetadata,
   LegalFlag,
   ResearchFindings,
+  FactCheckReport,
 } from "./types";
 import type { DocumentFacts } from "../documents/types";
 
@@ -143,6 +144,14 @@ export interface CrossValidationRaw {
   perplexity: LegalFlag[];
 }
 
+export interface CrossValidationAudit {
+  model: string;
+  status: "complete" | "error";
+  inputTokens?: number;
+  outputTokens?: number;
+  error?: string;
+}
+
 export function mergeFlags(
   claudeFlags: LegalFlag[],
   gptFlags: LegalFlag[],
@@ -267,37 +276,112 @@ export async function runMultiModelLegalReview(
   metadata: CaseMetadata,
   stateLaw: Record<string, unknown>,
   research?: ResearchFindings,
-  documentFacts?: DocumentFacts[]
-): Promise<{ flags: CrossValidatedLegalFlag[]; raw: CrossValidationRaw }> {
+  documentFacts?: DocumentFacts[],
+  factCheck?: FactCheckReport | null
+): Promise<{
+  flags: CrossValidatedLegalFlag[];
+  raw: CrossValidationRaw;
+  warnings: string[];
+  audits: CrossValidationAudit[];
+}> {
   const legalPrompt = buildLegalPrompt(
     script,
     parsed,
     metadata,
     stateLaw,
     research,
-    documentFacts
+    documentFacts,
+    factCheck
   );
 
   const [claudeResult, gptResult] = await Promise.allSettled([
-    callClaude(LEGAL_SYSTEM, legalPrompt),
-    callGPT(LEGAL_SYSTEM, legalPrompt),
+    callClaudeDetailed(LEGAL_SYSTEM, legalPrompt),
+    callGPTDetailed(LEGAL_SYSTEM, legalPrompt),
   ]);
 
-  const claudeFlags: LegalFlag[] =
-    claudeResult.status === "fulfilled"
-      ? safeJsonParse<LegalFlag[]>(claudeResult.value)
-      : [];
-  const gptFlags: LegalFlag[] =
-    gptResult.status === "fulfilled"
-      ? safeJsonParse<LegalFlag[]>(gptResult.value)
-      : [];
+  const warnings: string[] = [];
+  let claudeFlags: LegalFlag[] = [];
+  let gptFlags: LegalFlag[] = [];
+  let claudeParseError: string | undefined;
+  let gptParseError: string | undefined;
 
-  if (claudeResult.status === "rejected" && gptResult.status === "rejected") {
+  if (claudeResult.status === "fulfilled") {
+    try {
+      claudeFlags = safeJsonParse<LegalFlag[]>(claudeResult.value.text);
+    } catch (err) {
+      claudeParseError = err instanceof Error ? err.message : String(err);
+      warnings.push(
+        `Legal review fallback: Claude returned malformed JSON and was ignored. ${claudeParseError}`
+      );
+    }
+  }
+  if (gptResult.status === "fulfilled") {
+    try {
+      gptFlags = safeJsonParse<LegalFlag[]>(gptResult.value.text);
+    } catch (err) {
+      gptParseError = err instanceof Error ? err.message : String(err);
+      warnings.push(
+        `Legal review fallback: GPT returned malformed JSON and was ignored. ${gptParseError}`
+      );
+    }
+  }
+
+  const claudeUnavailable =
+    claudeResult.status === "rejected" || !!claudeParseError;
+  const gptUnavailable = gptResult.status === "rejected" || !!gptParseError;
+
+  if (claudeUnavailable && gptUnavailable) {
     throw new Error(
-      `Both legal models failed: Claude: ${claudeResult.reason}, GPT: ${gptResult.reason}`
+      `Both legal models failed: Claude: ${claudeResult.status === "rejected" ? claudeResult.reason : claudeParseError}, GPT: ${gptResult.status === "rejected" ? gptResult.reason : gptParseError}`
     );
   }
 
+  if (claudeResult.status === "rejected") {
+    warnings.push(
+      `Legal review fallback: Claude failed and GPT-only consensus was used. ${String(claudeResult.reason)}`
+    );
+  }
+  if (gptResult.status === "rejected") {
+    warnings.push(
+      `Legal review fallback: GPT failed and Claude-only consensus was used. ${String(gptResult.reason)}`
+    );
+  }
+
+  const audits: CrossValidationAudit[] = [
+    claudeResult.status === "fulfilled"
+      && !claudeParseError
+      ? {
+          model: claudeResult.value.model,
+          status: "complete",
+          inputTokens: claudeResult.value.usage?.inputTokens,
+          outputTokens: claudeResult.value.usage?.outputTokens,
+        }
+      : {
+          model: "claude-opus-4-6",
+          status: "error",
+          error:
+            claudeResult.status === "rejected"
+              ? String(claudeResult.reason)
+              : claudeParseError,
+        },
+    gptResult.status === "fulfilled"
+      && !gptParseError
+      ? {
+          model: gptResult.value.model,
+          status: "complete",
+          inputTokens: gptResult.value.usage?.inputTokens,
+          outputTokens: gptResult.value.usage?.outputTokens,
+        }
+      : {
+          model: "gpt-5.4",
+          status: "error",
+          error:
+            gptResult.status === "rejected"
+              ? String(gptResult.reason)
+              : gptParseError,
+        },
+  ];
+
   const { merged, raw } = mergeFlags(claudeFlags, gptFlags, []);
-  return { flags: merged, raw };
+  return { flags: merged, raw, warnings, audits };
 }

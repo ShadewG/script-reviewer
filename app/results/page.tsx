@@ -8,6 +8,7 @@ import AnnotatedScriptView from "./components/AnnotatedScriptView";
 import type { VideoFrameFinding } from "@/lib/pipeline/types";
 import { YT_POLICIES } from "@/lib/policies/youtube-policies";
 import { useTheme } from "@/lib/theme";
+import { useOnboarding, OnboardingOverlay } from "@/lib/onboarding";
 import { useDismissedFlags, flagKey, DISMISS_REASONS, type DismissReason } from "@/lib/dismissed-flags";
 import { useKeyboardNav, KeyboardHelpOverlay } from "@/lib/keyboard-nav";
 import { generateDisclaimers } from "@/lib/disclaimer-generator";
@@ -112,6 +113,8 @@ interface ReviewData {
   youtubeFlags: PolicyFlag[] | null;
   parsedEntities: Record<string, unknown> | null;
   researchData: Record<string, unknown> | null;
+  status: string;
+  error: string | null;
 }
 
 function verdictColor(v: string) {
@@ -586,7 +589,10 @@ function ResultsContent() {
   const [showDismissed, setShowDismissed] = useState(false);
   const [dismissingKey, setDismissingKey] = useState<string | null>(null);
   const [showDisclaimers, setShowDisclaimers] = useState(false);
+  const [resuming, setResuming] = useState(false);
+  const [resumeStages, setResumeStages] = useState<Array<{ stage: number; name: string; status: string; error?: string }>>([]);
   const { theme, toggle: toggleTheme } = useTheme();
+  const onboarding = useOnboarding("results");
 
   useEffect(() => {
     if (!id) return;
@@ -598,6 +604,58 @@ function ResultsContent() {
       .then((d) => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
   }, [id]);
+
+  const handleResume = useCallback(async () => {
+    if (!id || resuming) return;
+    setResuming(true);
+    setResumeStages([
+      { stage: 0, name: "SCRIPT PARSER", status: "pending" },
+      { stage: 1, name: "LEGAL REVIEW", status: "pending" },
+      { stage: 2, name: "YOUTUBE POLICY", status: "pending" },
+      { stage: 3, name: "CASE RESEARCH", status: "pending" },
+      { stage: 4, name: "SYNTHESIS", status: "pending" },
+    ]);
+    try {
+      const res = await fetch(`/api/reviews/${id}/resume`, { method: "POST" });
+      if (!res.ok) throw new Error("Resume failed");
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("No stream");
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const evt = JSON.parse(line.slice(6));
+            if (evt.type === "stage") {
+              setResumeStages((prev) =>
+                prev.map((s) =>
+                  s.stage === evt.stage ? { ...s, status: evt.status, name: evt.name || s.name, error: evt.error } : s
+                )
+              );
+            } else if (evt.type === "complete") {
+              // Reload the review data
+              const fresh = await fetch(`/api/reviews/${id}`);
+              if (fresh.ok) setData(await fresh.json());
+              setResumeStages([]);
+              break;
+            } else if (evt.type === "error") {
+              setResumeStages((prev) => [...prev.slice(0, -1), { ...prev[prev.length - 1], status: "error", error: evt.error }]);
+            }
+          } catch {}
+        }
+      }
+    } catch (err) {
+      setResumeStages((prev) => [...prev.slice(0, -1), { ...prev[prev.length - 1], status: "error", error: err instanceof Error ? err.message : "Failed" }]);
+    } finally {
+      setResuming(false);
+    }
+  }, [id, resuming]);
 
   /* ── Dismissed flags ── */
   const { isDismissed, getDismissal, dismiss, restore, dismissedCount } = useDismissedFlags(id ?? "");
@@ -833,6 +891,15 @@ function ResultsContent() {
           >
             {theme === "dark" ? "SUN" : "MOON"}
           </button>
+          {data.status === "failed" && (
+            <button
+              onClick={handleResume}
+              disabled={resuming}
+              className="text-xs uppercase tracking-wider border border-[var(--accent)] text-[var(--accent)] px-3 py-2 hover:bg-[var(--accent)] hover:text-[var(--bg)] disabled:opacity-50"
+            >
+              {resuming ? "RESUMING..." : "RE-ANALYZE"}
+            </button>
+          )}
           <button
             onClick={() => router.push("/")}
             className="text-xs uppercase tracking-wider border border-[var(--border)] px-3 py-2 hover:bg-[var(--bg-elevated)]"
@@ -842,9 +909,57 @@ function ResultsContent() {
         </div>
       </header>
 
+      {/* Resume Progress */}
+      {resumeStages.length > 0 && (
+        <div className="border border-[var(--border)] p-4 mb-6 space-y-2" data-no-print>
+          <p className="text-xs uppercase tracking-wider text-[var(--text-dim)] mb-3">Re-analyzing...</p>
+          {resumeStages.map((s) => (
+            <div key={s.stage} className="flex items-center gap-3">
+              <span className="text-xs w-32 uppercase tracking-wider text-[var(--text-dim)]">{s.name}</span>
+              <div className="flex-1 h-2 bg-[var(--bg-elevated)] overflow-hidden">
+                <div
+                  className={`h-full transition-all duration-500 ${
+                    s.status === "complete" ? "w-full bg-[var(--green)]" :
+                    s.status === "running" ? "w-2/3 bg-[var(--yellow)] animate-[progress-pulse_1.5s_ease-in-out_infinite]" :
+                    s.status === "error" ? "w-full bg-[var(--red)]" :
+                    "w-0"
+                  }`}
+                />
+              </div>
+              <span className="text-xs w-16 text-right uppercase" style={{
+                color: s.status === "complete" ? "var(--green)" :
+                       s.status === "running" ? "var(--yellow)" :
+                       s.status === "error" ? "var(--red)" :
+                       "var(--text-dim)"
+              }}>
+                {s.status === "complete" ? "DONE" : s.status === "running" ? "ACTIVE" : s.status === "error" ? "FAIL" : "WAIT"}
+              </span>
+            </div>
+          ))}
+          {resumeStages.some((s) => s.error) && (
+            <p className="text-xs text-[var(--red)] mt-2">
+              {resumeStages.find((s) => s.error)?.error}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Error Banner */}
+      {data.status === "failed" && data.error && !resuming && (
+        <div className="border border-[var(--red)] p-4 mb-6">
+          <div className="flex items-center gap-3">
+            <div className="w-3 h-3 bg-[var(--red)]" />
+            <span className="text-sm uppercase tracking-wider text-[var(--red)]">Analysis Failed</span>
+          </div>
+          <p className="text-xs text-[var(--text-dim)] mt-2 font-mono">{data.error}</p>
+          <p className="text-xs text-[var(--text-dim)] mt-1">Click RE-ANALYZE above to retry.</p>
+        </div>
+      )}
+
       {/* Verdict Banner */}
       {report && (
         <div
+          data-tour="verdict-banner"
           className="border p-4 mb-6"
           style={{ borderColor: verdictColor(report.verdict) }}
         >
@@ -929,7 +1044,7 @@ function ResultsContent() {
 
       {/* Tabs + Severity Filter — sticky container */}
       <div className="sticky top-0 z-20 bg-[var(--bg)]" data-no-print>
-      <div className="flex gap-0 border-b border-[var(--border)] mb-0 overflow-x-auto">
+      <div data-tour="tabs" className="flex gap-0 border-b border-[var(--border)] mb-0 overflow-x-auto">
         {(["overview", "video", "script", "legal", "youtube", "research", "raw"] as const).map((tab) => {
           const count = tabCounts[tab];
           return (
@@ -1440,7 +1555,7 @@ function ResultsContent() {
         )}
 
         {activeTab === "legal" && (
-          <div className="space-y-2" ref={navContainerRef}>
+          <div className="space-y-2" ref={navContainerRef} data-tour="dismiss-flags">
             {/* Cross-validation summary */}
             {data.legalCrossValidation && (
               <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 mb-4">
@@ -1897,6 +2012,15 @@ function ResultsContent() {
 
       {/* Keyboard shortcuts overlay */}
       {navShowHelp && <KeyboardHelpOverlay onClose={() => setNavShowHelp(false)} />}
+
+      <OnboardingOverlay
+        active={onboarding.active}
+        currentStep={onboarding.currentStep}
+        step={onboarding.step}
+        total={onboarding.steps.length}
+        onNext={onboarding.next}
+        onSkip={onboarding.skip}
+      />
     </div>
   );
 }

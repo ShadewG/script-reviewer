@@ -23,6 +23,7 @@ export interface CaseMetadata {
   footageTypes: string[];
   videoTitle?: string;
   thumbnailDesc?: string;
+  videoTranscript?: string;
   analysisMode?: AnalysisMode;
   documentFacts?: import("../documents/types").DocumentFacts[];
   videoFindings?: VideoFrameFinding[];
@@ -116,6 +117,21 @@ export interface ResearchFindings {
   keyCitations: string[];
 }
 
+export interface FactCheckFinding {
+  line?: number;
+  claim: string;
+  verdict: "supported" | "contradicted" | "unclear" | "needs_external_verification";
+  confidence: number;
+  basis: "documents" | "research" | "external";
+  evidence: string;
+  suggestedRewrite?: string;
+}
+
+export interface FactCheckReport {
+  summary: string;
+  findings: FactCheckFinding[];
+}
+
 export interface SynthesisReport {
   verdict: "publishable" | "borderline" | "not_publishable";
   riskScore: number;
@@ -144,6 +160,7 @@ export interface SynthesisReport {
     status: "present" | "missing" | "partial";
     note?: string;
   }>;
+  analysisWarnings?: string[];
   videoTimeline?: VideoFrameFinding[];
   legalFlags: LegalFlag[];
   policyFlags: PolicyFlag[];

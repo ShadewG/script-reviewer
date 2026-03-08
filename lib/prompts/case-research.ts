@@ -26,8 +26,15 @@ export function buildCaseResearchQueries(
     }
   }
 
-  // Limit to 5 queries max
-  return queries.slice(0, 5);
+  const uniqueEntities = new Set(
+    parsed.entities
+      .filter((entity) => entity.role === "suspect" || entity.role === "victim")
+      .map((entity) => entity.name.toLowerCase().trim())
+      .filter(Boolean)
+  ).size;
+  const maxQueries = Math.max(3, Math.min(8, 2 + uniqueEntities));
+
+  return queries.slice(0, maxQueries);
 }
 
 export const RESEARCH_SYNTHESIS_SYSTEM = `You are a legal research synthesizer. Combine multiple research results into a structured findings report. Return ONLY valid JSON.`;

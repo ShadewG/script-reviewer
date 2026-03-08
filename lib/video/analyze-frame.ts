@@ -19,9 +19,11 @@ Analyze ONE video frame and return ONLY JSON:
 }
 If no visible risk, return {"risks": []}.
 Flag only visible issues in this frame that are likely to matter in practice on YouTube: explicit unblurred gore/injury, nudity, sexual content, hate symbols/slurs, hard drug use/paraphernalia, clearly readable direct doxxing-level PII, or a clearly identifiable unblurred minor in a sensitive context.
+Also flag obvious third-party footage ownership risk when the frame visibly contains outside-source branding or player UI suggesting likely unlicensed clips (for example: TV network logos, news lower-thirds, social media repost UI, or entertainment watermarks).
 Do NOT flag generic true-crime context by itself.
 Do NOT flag blurred/pixelated/redacted/obscured imagery unless the disturbing detail is still plainly visible after the blur.
 Do NOT flag public-record screenshots, court exhibits, business records, IP logs, timestamps, device strings, road names without a street number, or generic maps by themselves.
+Do NOT flag police bodycam, sheriff/police department footage, evidence photos from law enforcement, or agency-branded investigative material as third-party ownership risk. Those are treated as owned/cleared footage for this review context.
 Do NOT flag uniforms, agency names, badges, "SHERIFF"/"POLICE" markings, or law-enforcement presence by itself.
 Do NOT flag "an identifiable person is visible" unless a concrete privacy trigger is present.
 Privacy risks require concrete evidence in-frame (examples: full street address with number + street name, readable phone/email, government ID/account number, or a clearly identifiable unblurred minor in sensitive context).`;
@@ -50,6 +52,10 @@ const ESCALATION_CONTENT_REGEX =
   /\b(blood|gore|graphic|dead body|corpse|weapon|gun|rifle|knife|drug|meth|cocaine|heroin|address|license plate|phone|email|ssn)\b/i;
 const PUBLIC_RECORD_TECHNICAL_REGEX =
   /\b(ip address|ipv4|ipv6|meta platforms business record|business record|device fingerprint|agent string|user agent|login|photo uploaded|timestamp|geolocation)\b/i;
+const THIRD_PARTY_OWNERSHIP_REGEX =
+  /\b(third party|copyright|licensed footage|broadcast logo|news lower third|network watermark|social media repost|player ui|tiktok|instagram|youtube player|tv clip|movie clip)\b/i;
+const OWNED_FOOTAGE_EXEMPT_REGEX =
+  /\b(bodycam|body cam|police|sheriff|deputy|officer|department|law enforcement|evidence photo|agency footage)\b/i;
 const GRAPHIC_POLICY_REGEX =
   /\b(graphic|gore|violence|disturbing imagery|trauma|injury)\b/i;
 const GRAPHIC_HARD_EVIDENCE_REGEX =
@@ -131,6 +137,8 @@ function normalizeAndFilterRisks(risks: VideoFrameRisk[]): VideoFrameRisk[] {
   const cleaned = risks
     .filter((r) => r && r.reasoning && r.policyName)
     .filter((r) => {
+      const joined = `${r.policyName} ${r.reasoning} ${r.detectedText ?? ""}`.toLowerCase();
+
       if (isLikelyLawEnforcementFalsePositive(r)) return false;
       if (isLikelyGraphicFalsePositive(r)) return false;
 
@@ -138,8 +146,11 @@ function normalizeAndFilterRisks(risks: VideoFrameRisk[]): VideoFrameRisk[] {
         return hasConcretePrivacyEvidence(r);
       }
 
+      if (THIRD_PARTY_OWNERSHIP_REGEX.test(joined) && OWNED_FOOTAGE_EXEMPT_REGEX.test(joined)) {
+        return false;
+      }
+
       // Drop vague monetization flags that only restate "sensitive true crime context".
-      const joined = `${r.policyName} ${r.reasoning} ${r.detectedText ?? ""}`.toLowerCase();
       if (PUBLIC_RECORD_TECHNICAL_REGEX.test(joined) && !hasConcretePrivacyEvidence(r)) {
         return false;
       }
