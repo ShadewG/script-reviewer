@@ -1,5 +1,23 @@
 # Script Shield — Future Roadmap
 
+## Active Execution Plan
+
+### Backend — In Progress Here
+- [x] **Video review evaluation harness** — Added `npm run video:eval` CLI for repeatable local runs with optional expected-incident / false-positive fixtures
+- [x] **Server-side candidate generator** — Replaced browser-led frame picking with FFmpeg-based scene-aware sampling in `lib/video/process.ts`
+- [x] **Backend upload flow migration** — `/api/upload-video` is now the source of truth for findings instead of the client-side scan loop
+- [x] **Incident metadata + clustering primitives** — Persist why a frame/window was selected and cluster temporal duplicates before report conversion
+- [x] **Candidate scoring before model calls** — Added low-cost grayscale feature scoring to prioritize text-overlay / high-detail frames and penalize low-information frames
+- [x] **Multi-frame incident review** — Backend now reviews a short frame window around each candidate instead of a single still
+
+### Frontend — Claude Follow-Ups
+- [x] **Video tab incident view** — Grouped incident table as default view with expand/collapse, severity sorting, deduplication, signature-based 180s window grouping
+- [x] **Diagnostics for frame selection** — Expanded incident panels show selection reason badges (floor_sample/scene_boundary/risk_neighbor/etc.), candidate score bar, and scene ID with time range
+- [ ] **Video review tuning controls** — Surface backend scan mode/profile and explain lenient vs exhaustive tradeoffs (needs backend: persist scanMode on Review model)
+- [x] **Evaluation visibility** — Diagnostics panel at top of video tab: raw moments vs grouped incidents with dedup %, total risks, scenes covered, severity distribution bar, frame selection reason distribution
+
+---
+
 ## Backend / Pipeline Improvements
 
 ### High Priority

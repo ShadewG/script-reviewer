@@ -326,6 +326,13 @@ function parseVideoSecond(tc: string): number {
   return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
 }
 
+function toTimecodeDisplay(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
 function normalizeText(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
 }
@@ -2034,7 +2041,35 @@ function ResultsContent() {
           );
         })()}
 
-        {activeTab === "video" && (
+        {activeTab === "video" && (() => {
+          // Compute evaluation stats from all findings
+          const allFindings = filteredVideoTimeline;
+          const totalRisks = allFindings.reduce((sum, f) => sum + f.risks.length, 0);
+          const sevDist = { low: 0, medium: 0, high: 0, severe: 0 };
+          const reasonDist = new Map<string, number>();
+          const sceneIds = new Set<number>();
+          let withMeta = 0;
+          for (const f of allFindings) {
+            for (const r of f.risks) {
+              sevDist[r.severity as keyof typeof sevDist] = (sevDist[r.severity as keyof typeof sevDist] ?? 0) + 1;
+            }
+            const meta = f.selectionMeta;
+            if (meta) {
+              withMeta++;
+              if (meta.sceneId != null) sceneIds.add(meta.sceneId);
+              for (const reason of meta.selectionReasons ?? []) {
+                reasonDist.set(reason, (reasonDist.get(reason) ?? 0) + 1);
+              }
+            }
+          }
+          const reasonLabels: Record<string, string> = {
+            floor_sample: "Floor Sample",
+            scene_boundary: "Scene Boundary",
+            scene_midpoint: "Scene Midpoint",
+            scene_interior: "Scene Interior",
+            risk_neighbor: "Risk Neighbor",
+          };
+          return (
           <div>
             {groupedVideoTimeline.length === 0 ? (
               <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-8 text-center">
@@ -2046,12 +2081,79 @@ function ResultsContent() {
               </div>
             ) : (
               <>
+                {/* Evaluation Diagnostics Panel */}
+                <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-4 mb-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-1 h-4 bg-[var(--text-dim)]" />
+                    <span className="text-[10px] uppercase tracking-[0.15em] text-[var(--text-dim)] font-bold">Video Scan Diagnostics</span>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+                    <div className="bg-[var(--bg)] border border-[var(--border)] p-3">
+                      <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Raw Moments</div>
+                      <div className="text-xl font-bold text-[var(--text-bright)] tabular-nums">{filteredVideoTimeline.length}</div>
+                    </div>
+                    <div className="bg-[var(--bg)] border border-[var(--border)] p-3">
+                      <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Grouped Incidents</div>
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-xl font-bold text-[var(--text-bright)] tabular-nums">{groupedVideoTimeline.length}</span>
+                        {filteredVideoTimeline.length > groupedVideoTimeline.length && (
+                          <span className="text-[10px] text-[var(--green)]">
+                            {Math.round((1 - groupedVideoTimeline.length / filteredVideoTimeline.length) * 100)}% deduped
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="bg-[var(--bg)] border border-[var(--border)] p-3">
+                      <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Total Risks</div>
+                      <div className="text-xl font-bold text-[var(--text-bright)] tabular-nums">{totalRisks}</div>
+                    </div>
+                    <div className="bg-[var(--bg)] border border-[var(--border)] p-3">
+                      <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Scenes Covered</div>
+                      <div className="text-xl font-bold text-[var(--text-bright)] tabular-nums">{sceneIds.size || "—"}</div>
+                    </div>
+                  </div>
+
+                  {/* Severity distribution bar */}
+                  {totalRisks > 0 && (
+                    <div className="mb-3">
+                      <div className="text-[9px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Severity Distribution</div>
+                      <div className="flex h-2 overflow-hidden border border-[var(--border)] rounded-sm">
+                        {sevDist.severe > 0 && <div className="bg-[var(--red)]" style={{ width: `${(sevDist.severe / totalRisks) * 100}%` }} title={`${sevDist.severe} severe`} />}
+                        {sevDist.high > 0 && <div className="bg-[var(--amber)]" style={{ width: `${(sevDist.high / totalRisks) * 100}%` }} title={`${sevDist.high} high`} />}
+                        {sevDist.medium > 0 && <div className="bg-[var(--yellow)]" style={{ width: `${(sevDist.medium / totalRisks) * 100}%` }} title={`${sevDist.medium} medium`} />}
+                        {sevDist.low > 0 && <div className="bg-[var(--green)]" style={{ width: `${(sevDist.low / totalRisks) * 100}%` }} title={`${sevDist.low} low`} />}
+                      </div>
+                      <div className="flex gap-4 mt-1">
+                        {(["severe", "high", "medium", "low"] as const).map(sev => sevDist[sev] > 0 && (
+                          <span key={sev} className="text-[9px] flex items-center gap-1">
+                            <span className="w-1.5 h-1.5" style={{ background: sevColor(sev) }} />
+                            <span className="text-[var(--text-dim)]">{sevDist[sev]} {sev}</span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Frame selection reasons */}
+                  {withMeta > 0 && reasonDist.size > 0 && (
+                    <div>
+                      <div className="text-[9px] uppercase tracking-wider text-[var(--text-dim)] mb-1.5">Frame Selection Reasons</div>
+                      <div className="flex flex-wrap gap-2">
+                        {[...reasonDist.entries()].sort((a, b) => b[1] - a[1]).map(([reason, count]) => (
+                          <span key={reason} className="text-[10px] px-2 py-1 bg-[var(--bg)] border border-[var(--border)] text-[var(--text)]">
+                            {reasonLabels[reason] ?? reason.replace(/_/g, " ")}
+                            <span className="text-[var(--text-dim)] ml-1">{count}</span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Incident Controls */}
                 <div className="flex items-center gap-3 mb-4">
                   <span className="text-sm text-[var(--text-bright)]">
-                    {groupedVideoTimeline.length} grouped incident{groupedVideoTimeline.length === 1 ? "" : "s"}
-                  </span>
-                  <span className="text-xs text-[var(--text-dim)]">
-                    {filteredVideoTimeline.length} raw moment{filteredVideoTimeline.length === 1 ? "" : "s"} collapsed
+                    {groupedVideoTimeline.length} incident{groupedVideoTimeline.length === 1 ? "" : "s"}
                   </span>
                   <div className="ml-auto flex gap-2">
                     <button
@@ -2089,6 +2191,7 @@ function ResultsContent() {
                     const categories = [...new Set(item.risks.map(r => r.category.replaceAll("_", " ")))];
                     const rangeLabel =
                       group.count > 1 ? `${group.startTimecode}-${group.endTimecode}` : item.timecode;
+                    const meta = item.selectionMeta;
 
                     return (
                       <div key={`${group.signature}-${group.startTimecode}-${group.endTimecode}-${i}`}>
@@ -2120,6 +2223,61 @@ function ResultsContent() {
                                 ? `${group.count} nearby flagged moments collapsed into one incident from ${group.startTimecode} to ${group.endTimecode}.`
                                 : `Single flagged moment at ${item.timecode}.`}
                             </div>
+
+                            {/* Frame Selection Diagnostics */}
+                            {meta && (meta.selectionReasons?.length || meta.candidateScore != null) && (
+                              <div className="border border-[var(--border)] bg-[var(--bg)] p-3 mb-3">
+                                <div className="text-[9px] uppercase tracking-wider text-[var(--text-dim)] mb-2 font-bold">Frame Selection</div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  {meta.selectionReasons?.map((reason) => {
+                                    const colors: Record<string, string> = {
+                                      risk_neighbor: "var(--red)",
+                                      scene_boundary: "var(--amber)",
+                                      scene_midpoint: "var(--yellow)",
+                                      scene_interior: "var(--text-dim)",
+                                      floor_sample: "var(--green)",
+                                    };
+                                    return (
+                                      <span
+                                        key={reason}
+                                        className="text-[10px] px-1.5 py-0.5 border uppercase tracking-wider"
+                                        style={{ color: colors[reason] ?? "var(--text-dim)", borderColor: colors[reason] ?? "var(--border)" }}
+                                      >
+                                        {reasonLabels[reason] ?? reason.replace(/_/g, " ")}
+                                      </span>
+                                    );
+                                  })}
+                                  {meta.candidateScore != null && (
+                                    <span className="text-[10px] text-[var(--text-dim)] flex items-center gap-1.5 ml-1">
+                                      Score:
+                                      <span className="inline-flex items-center gap-1">
+                                        <span className="inline-block w-12 h-1.5 bg-[var(--bg-surface)] border border-[var(--border)] overflow-hidden">
+                                          <span
+                                            className="block h-full"
+                                            style={{
+                                              width: `${Math.min(100, meta.candidateScore * 100)}%`,
+                                              background: meta.candidateScore >= 0.7 ? "var(--green)" : meta.candidateScore >= 0.4 ? "var(--yellow)" : "var(--text-dim)",
+                                            }}
+                                          />
+                                        </span>
+                                        <span className="tabular-nums">{meta.candidateScore.toFixed(2)}</span>
+                                      </span>
+                                    </span>
+                                  )}
+                                  {meta.sceneId != null && (
+                                    <span className="text-[10px] text-[var(--text-dim)] ml-1">
+                                      Scene {meta.sceneId}
+                                      {meta.sceneStart != null && meta.sceneEnd != null && (
+                                        <span className="ml-1 font-mono">
+                                          ({toTimecodeDisplay(meta.sceneStart)}–{toTimecodeDisplay(meta.sceneEnd)})
+                                        </span>
+                                      )}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+
                             {item.thumbnailDataUrl && (
                               <img
                                 src={item.thumbnailDataUrl}
@@ -2162,7 +2320,8 @@ function ResultsContent() {
               </>
             )}
           </div>
-        )}
+          );
+        })()}
 
         {activeTab === "legal" && (
           <div className="space-y-2" ref={navContainerRef} data-tour="dismiss-flags">
