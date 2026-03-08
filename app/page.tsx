@@ -30,7 +30,7 @@ const FOOTAGE_TYPES = [
   "Bodycam", "911 Calls", "Court Footage", "Interrogation",
   "Surveillance", "News Clips", "Photos", "Reenactment",
 ];
-type VideoScanMode = "quick" | "balanced" | "deep";
+type VideoScanMode = "quick" | "balanced" | "deep" | "exhaustive";
 const VIDEO_SCAN_MODES: Array<{
   value: VideoScanMode;
   label: string;
@@ -38,6 +38,7 @@ const VIDEO_SCAN_MODES: Array<{
   floorIntervalSeconds: number;
   sceneProbeSeconds: number;
   maxFrames: number;
+  warning?: string;
 }> = [
   {
     value: "quick",
@@ -62,6 +63,15 @@ const VIDEO_SCAN_MODES: Array<{
     floorIntervalSeconds: 3,
     sceneProbeSeconds: 1,
     maxFrames: 420,
+  },
+  {
+    value: "exhaustive",
+    label: "EXHAUSTIVE (~2000 frames max)",
+    baseIntervalSeconds: 2,
+    floorIntervalSeconds: 1,
+    sceneProbeSeconds: 0.5,
+    maxFrames: 2000,
+    warning: "Analyzes nearly every second of video. This will use significant API credits (~$3-8 depending on video length) and can take 15-30+ minutes. Use only when you need frame-level coverage for high-stakes content.",
   },
 ];
 
@@ -925,6 +935,11 @@ export default function Home() {
                 <option key={m.value} value={m.value}>{m.label}</option>
               ))}
             </select>
+            {VIDEO_SCAN_MODES.find((m) => m.value === videoScanMode)?.warning && (
+              <div className="border border-[var(--red)] bg-[var(--bg-surface)] p-2 mb-2 text-[10px] text-[var(--red)] leading-relaxed">
+                {VIDEO_SCAN_MODES.find((m) => m.value === videoScanMode)!.warning}
+              </div>
+            )}
             <input
               ref={videoInputRef}
               type="file"
