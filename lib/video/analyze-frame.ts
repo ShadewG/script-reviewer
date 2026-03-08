@@ -4,7 +4,7 @@ import type { VideoFrameRisk } from "../pipeline/types";
 const ANALYSIS_RETRIES = 2;
 
 const FRAME_SYSTEM = `You are a practical YouTube ad-suitability reviewer for true-crime documentary content.
-Analyze ONE video frame and return ONLY JSON:
+Analyze one or more nearby video frames from the same incident and return ONLY JSON:
 {
   "risks": [
     {
@@ -18,8 +18,9 @@ Analyze ONE video frame and return ONLY JSON:
   ]
 }
 If no visible risk, return {"risks": []}.
-Flag only visible issues in this frame that are likely to matter in practice on YouTube: explicit unblurred gore/injury, nudity, sexual content, hate symbols/slurs, hard drug use/paraphernalia, clearly readable direct doxxing-level PII, or a clearly identifiable unblurred minor in a sensitive context.
-Also flag obvious third-party footage ownership risk when the frame visibly contains outside-source branding or player UI suggesting likely unlicensed clips (for example: TV network logos, news lower-thirds, social media repost UI, or entertainment watermarks).
+Flag only visible issues in the provided frames that are likely to matter in practice on YouTube: explicit unblurred gore/injury, nudity, sexual content, hate symbols/slurs, hard drug use/paraphernalia, clearly readable direct doxxing-level PII, or a clearly identifiable unblurred minor in a sensitive context.
+Also flag obvious third-party footage ownership risk when the frames visibly contain outside-source branding or player UI suggesting likely unlicensed clips (for example: TV network logos, news lower-thirds, social media repost UI, or entertainment watermarks).
+Be conservative: prefer risks supported across multiple nearby frames when available, and do not escalate based on a single ambiguous still.
 Do NOT flag generic true-crime context by itself.
 Do NOT flag blurred/pixelated/redacted/obscured imagery unless the disturbing detail is still plainly visible after the blur.
 Do NOT flag public-record screenshots, court exhibits, business records, IP logs, timestamps, device strings, road names without a street number, or generic maps by themselves.
@@ -176,9 +177,31 @@ function normalizeAndFilterRisks(risks: VideoFrameRisk[]): VideoFrameRisk[] {
   });
 }
 
-export async function analyzeFrameBase64(base64: string): Promise<VideoFrameRisk[]> {
+async function analyzeFramesBase64(
+  frames: Array<{ label: string; base64: string }>
+): Promise<VideoFrameRisk[]> {
   for (let attempt = 1; ; attempt++) {
     try {
+      const content: Anthropic.Messages.MessageParam["content"] = [];
+      for (const frame of frames) {
+        content.push({
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: "image/jpeg",
+            data: frame.base64,
+          },
+        });
+        content.push({
+          type: "text",
+          text: frame.label,
+        });
+      }
+      content.push({
+        type: "text",
+        text: `Review this ${frames.length > 1 ? "sequence of nearby frames" : "frame"} for policy/privacy risks.`,
+      });
+
       const response = await getAnthropic().messages.create({
         model: "claude-sonnet-4-6",
         max_tokens: 1200,
@@ -187,20 +210,7 @@ export async function analyzeFrameBase64(base64: string): Promise<VideoFrameRisk
         messages: [
           {
             role: "user",
-            content: [
-              {
-                type: "image",
-                source: {
-                  type: "base64",
-                  media_type: "image/jpeg",
-                  data: base64,
-                },
-              },
-              {
-                type: "text",
-                text: "Review this frame for policy/privacy risks.",
-              },
-            ],
+            content,
           },
         ],
       });
@@ -215,4 +225,15 @@ export async function analyzeFrameBase64(base64: string): Promise<VideoFrameRisk
       }
     }
   }
+}
+
+export async function analyzeFrameBase64(base64: string): Promise<VideoFrameRisk[]> {
+  return analyzeFramesBase64([{ label: "Frame 1", base64 }]);
+}
+
+export async function analyzeFrameWindowBase64(
+  frames: Array<{ label: string; base64: string }>
+): Promise<VideoFrameRisk[]> {
+  if (frames.length === 0) return [];
+  return analyzeFramesBase64(frames);
 }

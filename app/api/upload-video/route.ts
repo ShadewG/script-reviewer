@@ -24,6 +24,7 @@ export async function POST(req: NextRequest) {
   }
 
   const file = formData.get("file");
+  const mode = formData.get("mode");
   if (!(file instanceof File)) {
     return Response.json({ error: "No video file uploaded" }, { status: 400 });
   }
@@ -43,7 +44,11 @@ export async function POST(req: NextRequest) {
 
   try {
     const buffer = Buffer.from(await file.arrayBuffer());
-    const result = await processVideoFile(buffer, file.name);
+    const result = await processVideoFile(
+      buffer,
+      file.name,
+      { mode: typeof mode === "string" ? mode : null }
+    );
     return Response.json(result);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Video processing failed";

@@ -9,11 +9,24 @@ export interface VideoFrameRisk {
   detectedText?: string;
 }
 
+export interface VideoFrameSelectionMeta {
+  sceneId?: number;
+  sceneStart?: number;
+  sceneEnd?: number;
+  candidateScore?: number;
+  selectionReasons?: string[];
+  incidentStartSecond?: number;
+  incidentEndSecond?: number;
+  incidentCount?: number;
+  incidentSignature?: string;
+}
+
 export interface VideoFrameFinding {
   second: number;
   timecode: string;
   risks: VideoFrameRisk[];
   thumbnailDataUrl?: string;
+  selectionMeta?: VideoFrameSelectionMeta;
 }
 
 export interface CaseMetadata {

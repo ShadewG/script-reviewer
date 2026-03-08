@@ -267,234 +267,37 @@ export default function Home() {
   const handleVideoUpload = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     const file = files[0];
-    let objectUrl: string | null = null;
     setVideoUploading(true);
     setVideoError(null);
-    setVideoProgress("Loading video metadata...");
+    setVideoProgress("Uploading video for backend scan...");
     setVideoTranscript("");
     setVideoTranscriptError(null);
 
     const transcriptionPromise = transcribeVideo(file);
 
     try {
-      objectUrl = URL.createObjectURL(file);
-      const video = document.createElement("video");
-      video.preload = "metadata";
-      video.muted = true;
-      video.src = objectUrl;
-      await new Promise<void>((resolve, reject) => {
-        video.onloadedmetadata = () => resolve();
-        video.onerror = () => reject(new Error("Could not read video metadata"));
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("mode", videoScanMode);
+      const res = await fetch("/api/upload-video", {
+        method: "POST",
+        body: formData,
       });
-
-      const duration = Number.isFinite(video.duration) ? Math.max(1, Math.floor(video.duration)) : 0;
-      if (duration <= 0) throw new Error("Invalid video duration");
-
-      const mode = VIDEO_SCAN_MODES.find((m) => m.value === videoScanMode) ?? VIDEO_SCAN_MODES[1];
-
-      const canvas = document.createElement("canvas");
-      const thumbCanvas = document.createElement("canvas");
-      const sigCanvas = document.createElement("canvas");
-      sigCanvas.width = 48;
-      sigCanvas.height = 27;
-      const sampledSeconds: number[] = [];
-
-      const seekTo = (sec: number) =>
-        new Promise<void>((resolve, reject) => {
-          const onSeeked = () => {
-            video.removeEventListener("seeked", onSeeked);
-            resolve();
-          };
-          const onError = () => {
-            video.removeEventListener("error", onError);
-            reject(new Error(`Failed seeking to ${sec}s`));
-          };
-          video.addEventListener("seeked", onSeeked, { once: true });
-          video.addEventListener("error", onError, { once: true });
-          video.currentTime = Math.min(sec, Math.max(0, video.duration - 0.1));
-        });
-
-      const buildSignature = (): FrameSignature => {
-        const sigCtx = sigCanvas.getContext("2d");
-        if (!sigCtx) throw new Error("Could not initialize scene detection canvas");
-        sigCtx.drawImage(video, 0, 0, sigCanvas.width, sigCanvas.height);
-        const img = sigCtx.getImageData(0, 0, sigCanvas.width, sigCanvas.height).data;
-        const values = new Uint8ClampedArray(sigCanvas.width * sigCanvas.height);
-        for (let i = 0, p = 0; i < img.length; i += 4, p++) {
-          values[p] = Math.round(0.299 * img[i] + 0.587 * img[i + 1] + 0.114 * img[i + 2]);
-        }
-        const avg = values.reduce((a, b) => a + b, 0) / values.length;
-        let bits = "";
-        for (let i = 0; i < values.length; i++) bits += values[i] > avg ? "1" : "0";
-        return { values, hash: bits };
-      };
-
-      const probeTimes: number[] = [];
-      for (let t = 0; t < duration; t += mode.sceneProbeSeconds) probeTimes.push(t);
-      if (!probeTimes.includes(duration - 1)) probeTimes.push(Math.max(0, duration - 1));
-      probeTimes.sort((a, b) => a - b);
-
-      const boundaries = new Set<number>([0, Math.max(0, duration - 1)]);
-      let prevProbeSig: FrameSignature | null = null;
-      for (let i = 0; i < probeTimes.length; i++) {
-        setVideoProgress(`Detecting scenes ${i + 1}/${probeTimes.length}...`);
-        await seekTo(probeTimes[i]);
-        const sig = buildSignature();
-        const diff = frameDistance(prevProbeSig, sig);
-        if (prevProbeSig && diff >= 0.17) boundaries.add(probeTimes[i]);
-        prevProbeSig = sig;
-      }
-
-      const sortedBoundaries = [...boundaries].sort((a, b) => a - b);
-      const scenes: SceneSegment[] = [];
-      for (let i = 0; i < sortedBoundaries.length; i++) {
-        const start = sortedBoundaries[i];
-        const end = i + 1 < sortedBoundaries.length ? sortedBoundaries[i + 1] : duration - 1;
-        if (end <= start) continue;
-        scenes.push({ id: scenes.length, start, end });
-      }
-
-      const candidateTimes = new Set<number>();
-      for (let t = 0; t < duration; t += mode.floorIntervalSeconds) candidateTimes.add(t);
-      for (const scene of scenes) {
-        const len = Math.max(1, scene.end - scene.start);
-        let targetCount = 1;
-        if (len > 60) targetCount = 6;
-        else if (len > 20) targetCount = 4;
-        else if (len > 5) targetCount = 2;
-
-        candidateTimes.add(scene.start);
-        candidateTimes.add(scene.end);
-        for (let i = 1; i <= targetCount; i++) {
-          const ratio = i / (targetCount + 1);
-          candidateTimes.add(Math.round(scene.start + len * ratio));
-        }
-      }
-
-      let queue = [...candidateTimes]
-        .filter((t) => t >= 0 && t < duration)
-        .sort((a, b) => a - b);
-      if (queue.length > mode.maxFrames) {
-        const stride = Math.max(1, Math.ceil(queue.length / mode.maxFrames));
-        queue = queue.filter((_, i) => i % stride === 0).slice(0, mode.maxFrames);
-      }
-
-      const sceneBySecond = (sec: number): SceneSegment =>
-        scenes.find((s) => sec >= s.start && sec <= s.end) ??
-        { id: -1, start: 0, end: duration - 1 };
-
-      const findings: VideoFrameFinding[] = [];
-      const visualSeen = new Set<string>();
-      const semanticSeen = new Map<string, number>();
-      const pendingWeak = new Map<
-        string,
-        Array<{ second: number; risk: VideoFrameFinding["risks"][number] }>
-      >();
-      const sceneCounts = new Map<number, number>();
-      const sceneCategories = new Map<number, Set<string>>();
-      const visitedSeconds = new Set<number>();
-
-      let idx = 0;
-      while (idx < queue.length && sampledSeconds.length < mode.maxFrames) {
-        const second = queue[idx++];
-        if (visitedSeconds.has(second)) continue;
-        visitedSeconds.add(second);
-        sampledSeconds.push(second);
-        setVideoProgress(`Scanning frame ${sampledSeconds.length}/${Math.min(queue.length, mode.maxFrames)}...`);
-        await seekTo(second);
-
-        const srcW = video.videoWidth || 1280;
-        const srcH = video.videoHeight || 720;
-        const targetW = Math.min(960, srcW);
-        const targetH = Math.max(1, Math.round((srcH / srcW) * targetW));
-        canvas.width = targetW;
-        canvas.height = targetH;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) throw new Error("Could not initialize canvas");
-        ctx.drawImage(video, 0, 0, targetW, targetH);
-
-        const signature = buildSignature();
-        const hashKey = signature.hash.slice(0, 120);
-        if (visualSeen.has(hashKey)) continue;
-        visualSeen.add(hashKey);
-
-        const dataUrl = canvas.toDataURL("image/jpeg", 0.72);
-        const base64 = dataUrl.split(",")[1];
-        const h = String(Math.floor(second / 3600)).padStart(2, "0");
-        const m = String(Math.floor((second % 3600) / 60)).padStart(2, "0");
-        const s = String(second % 60).padStart(2, "0");
-        const timecode = `${h}:${m}:${s}`;
-
-        const res = await fetch("/api/analyze-video-frame", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ second, timecode, imageBase64: base64 }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Frame analysis failed");
-        if (!Array.isArray(data.risks) || data.risks.length === 0) continue;
-
-        for (const delta of [-2, -1, 1, 2]) {
-          const t = second + delta;
-          if (t >= 0 && t < duration && !visitedSeconds.has(t)) queue.push(t);
-        }
-
-        const scene = sceneBySecond(second);
-        const sceneCount = sceneCounts.get(scene.id) ?? 0;
-        const cats = sceneCategories.get(scene.id) ?? new Set<string>();
-        sceneCategories.set(scene.id, cats);
-
-        const keptRisks: VideoFrameFinding["risks"] = [];
-        for (const risk of data.risks) {
-          const key = riskSemanticKey(risk);
-          const prevAt = semanticSeen.get(key);
-          if (typeof prevAt === "number" && Math.abs(prevAt - second) <= 12) continue;
-
-          const isWeak = !hasHardSignal(risk) && (risk.severity === "low" || risk.severity === "medium");
-          if (isWeak) {
-            const pending = pendingWeak.get(key) ?? [];
-            pending.push({ second, risk });
-            pendingWeak.set(key, pending);
-            const confirmed = pending.some((p) => p !== pending[0] && Math.abs(p.second - second) <= 12);
-            if (!confirmed) continue;
-          }
-
-          if (sceneCount >= 3 && cats.has(risk.category)) continue;
-          semanticSeen.set(key, second);
-          cats.add(risk.category);
-          keptRisks.push(risk);
-        }
-
-        if (keptRisks.length === 0) continue;
-        const thumbW = Math.min(320, targetW);
-        const thumbH = Math.max(1, Math.round((targetH / targetW) * thumbW));
-        thumbCanvas.width = thumbW;
-        thumbCanvas.height = thumbH;
-        const tctx = thumbCanvas.getContext("2d");
-        if (!tctx) throw new Error("Could not initialize thumbnail canvas");
-        tctx.drawImage(video, 0, 0, thumbW, thumbH);
-        const thumbnailDataUrl = thumbCanvas.toDataURL("image/jpeg", 0.58);
-        findings.push({
-          second: data.second,
-          timecode: data.timecode,
-          risks: keptRisks,
-          thumbnailDataUrl,
-        });
-        sceneCounts.set(scene.id, sceneCount + 1);
-        queue.sort((a, b) => a - b);
-      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Video upload failed");
 
       await transcriptionPromise;
+      const findings = Array.isArray(data.findings) ? data.findings : [];
       setVideoFindings(findings);
-      const avgStep =
-        sampledSeconds.length > 1
-          ? Math.round((sampledSeconds[sampledSeconds.length - 1] - sampledSeconds[0]) / (sampledSeconds.length - 1))
-          : mode.baseIntervalSeconds;
       setVideoMeta({
-        sampledFrames: sampledSeconds.length,
-        intervalSeconds: Math.max(1, avgStep),
+        sampledFrames: typeof data.sampledFrames === "number" ? data.sampledFrames : findings.length,
+        intervalSeconds: typeof data.intervalSeconds === "number" ? data.intervalSeconds : 0,
       });
-      setVideoProgress(`Scan complete (${findings.length} risky timecodes, ${sampledSeconds.length} scene samples).`);
+      const sceneCount = typeof data.sceneCount === "number" ? data.sceneCount : null;
+      const candidateFrames = typeof data.candidateFrames === "number" ? data.candidateFrames : null;
+      setVideoProgress(
+        `Backend scan complete (${findings.length} risky timecodes, ${data.sampledFrames ?? findings.length} analyzed frames${sceneCount ? `, ${sceneCount} scenes` : ""}${candidateFrames ? `, ${candidateFrames} initial candidates` : ""}).`
+      );
     } catch (err) {
       setVideoFindings([]);
       setVideoMeta(null);
@@ -502,7 +305,6 @@ export default function Home() {
       setVideoError(err instanceof Error ? err.message : "Video upload failed");
     } finally {
       await transcriptionPromise;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
       setVideoUploading(false);
       if (videoInputRef.current) videoInputRef.current.value = "";
     }

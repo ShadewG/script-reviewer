@@ -20,6 +20,7 @@ import {
   selectClaimsForFactCheck,
 } from "../prompts/fact-check";
 import { SYNTHESIS_SYSTEM, buildSynthesisPrompt } from "../prompts/synthesis";
+import { clusterVideoFindings } from "../video/cluster";
 import { runMultiModelLegalReview } from "./cross-validate";
 import {
   heuristicLegalFlags,
@@ -584,6 +585,7 @@ export async function runPipeline(
     videoFindings,
     videoTranscript: metadata.videoTranscript ?? review.videoTranscript ?? undefined,
   };
+  const clusteredVideoFindings = clusterVideoFindings(enrichedMetadata.videoFindings ?? []);
 
   const warnings = asStringArray(review.analysisWarnings);
   const addWarning = (warning: string) => {
@@ -666,12 +668,12 @@ export async function runPipeline(
     const rawFlags = normalizePolicyFlagArray(
       await parseJsonWithRepair<unknown>(ytResult.text)
     );
-    const finalFlags = dedupePolicyFlags(
-      mergePolicyFlags(
-        mergePolicyFlags(rawFlags, heuristicPolicyFlags(script)),
-        videoFindingsToPolicyFlags(enrichedMetadata.videoFindings ?? [])
-      )
-    );
+      const finalFlags = dedupePolicyFlags(
+        mergePolicyFlags(
+          mergePolicyFlags(rawFlags, heuristicPolicyFlags(script)),
+          videoFindingsToPolicyFlags(clusteredVideoFindings)
+        )
+      );
     await prisma.review.update({
       where: { id: reviewId },
       data: { youtubeFlags: finalFlags as never[] },
@@ -856,7 +858,7 @@ export async function runPipeline(
     policyFlags = dedupePolicyFlags(
       mergePolicyFlags(
         heuristicPolicyFlags(script),
-        videoFindingsToPolicyFlags(enrichedMetadata.videoFindings ?? [])
+        videoFindingsToPolicyFlags(clusteredVideoFindings)
       )
     );
     await prisma.review.update({
@@ -1007,7 +1009,7 @@ export async function runPipeline(
       legalFlags = mergeLegalFlags(legalFlags, heuristicLegalFlags(script));
       legalFlags = mergeLegalFlags(
         legalFlags,
-        videoFindingsToLegalFlags(enrichedMetadata.videoFindings ?? [])
+        videoFindingsToLegalFlags(clusteredVideoFindings)
       );
       legalFlags = dedupeLegalFlags(legalFlags);
       await prisma.review.update({
@@ -1093,7 +1095,7 @@ export async function runPipeline(
       maxItems: 5,
       dropLowPriority: false,
     });
-    report.videoTimeline = (enrichedMetadata.videoFindings ?? []).filter(
+    report.videoTimeline = clusteredVideoFindings.filter(
       (f) => Array.isArray(f.risks) && f.risks.length > 0
     );
     report.riskDashboard.monetization =
@@ -1132,7 +1134,7 @@ export async function runPipeline(
       recommendedEdits: [],
       edsaChecklist: [],
       analysisWarnings: warnings,
-      videoTimeline: (enrichedMetadata.videoFindings ?? []).filter(
+      videoTimeline: clusteredVideoFindings.filter(
         (f) => Array.isArray(f.risks) && f.risks.length > 0
       ),
       legalFlags,

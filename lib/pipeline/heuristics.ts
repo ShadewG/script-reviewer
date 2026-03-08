@@ -143,6 +143,27 @@ function hasHardLegalPrivacyEvidenceFromVideoRisk(
   return hasHardYoutubePrivacyEvidenceFromVideoRisk(risk);
 }
 
+function videoFlagLabel(finding: VideoFrameFinding): string {
+  return `[Video ${finding.timecode}]`;
+}
+
+function videoIncidentContext(finding: VideoFrameFinding): string {
+  const count = finding.selectionMeta?.incidentCount ?? 1;
+  const start = finding.selectionMeta?.incidentStartSecond;
+  const end = finding.selectionMeta?.incidentEndSecond;
+  if (count <= 1 || start == null || end == null || end <= start) {
+    return `Timecode: ${finding.timecode}.`;
+  }
+  return `Incident range: ${finding.timecode}-${toTimecode(end)} across ${count} clustered moments.`;
+}
+
+function toTimecode(second: number): string {
+  const h = String(Math.floor(second / 3600)).padStart(2, "0");
+  const m = String(Math.floor((second % 3600) / 60)).padStart(2, "0");
+  const s = String(second % 60).padStart(2, "0");
+  return `${h}:${m}:${s}`;
+}
+
 const TRAUMA_PATTERNS: Array<{
   regex: RegExp;
   severity: "medium" | "high" | "severe";
@@ -365,7 +386,7 @@ export function videoFindingsToPolicyFlags(
         continue;
       }
 
-      const text = `[Video ${finding.timecode}] ${risk.detectedText ?? risk.policyName}`;
+      const text = `${videoFlagLabel(finding)} ${risk.detectedText ?? risk.policyName}`;
       const tokens = tokenSet(`${text} ${risk.reasoning} ${risk.policyName}`);
       const bucket = recentByCategory.get(risk.category) ?? [];
 
@@ -394,7 +415,7 @@ export function videoFindingsToPolicyFlags(
         impact: risk.impact,
         saferRewrite:
           "Blur/crop sensitive visuals or replace with non-graphic and non-identifying alternatives.",
-        reasoning: `${risk.reasoning} Timecode: ${finding.timecode}.`,
+        reasoning: `${risk.reasoning} ${videoIncidentContext(finding)}`,
       });
     }
   }
@@ -412,7 +433,7 @@ export function videoFindingsToLegalFlags(
     for (const risk of finding.risks ?? []) {
       if (risk.category !== "privacy") continue;
       if (!hasHardLegalPrivacyEvidenceFromVideoRisk(risk)) continue;
-      const text = `[Video ${finding.timecode}] ${risk.detectedText ?? "Sensitive visual detail"}`;
+      const text = `${videoFlagLabel(finding)} ${risk.detectedText ?? "Sensitive visual detail"}`;
       const tokens = tokenSet(`${text} ${risk.reasoning} ${risk.policyName}`);
 
       const isNearDuplicate = recent.some((prev) => {
@@ -434,7 +455,7 @@ export function videoFindingsToLegalFlags(
             : risk.severity === "high"
             ? "high"
             : "medium",
-        reasoning: `${risk.reasoning} Timecode: ${finding.timecode}.`,
+        reasoning: `${risk.reasoning} ${videoIncidentContext(finding)}`,
         saferRewrite:
           "Blur or remove identifying visual information before publication.",
         counselReview: risk.severity === "severe",

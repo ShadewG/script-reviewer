@@ -78,6 +78,17 @@ const VideoFindingsSchema = z.array(
     second: z.number().int().min(0),
     timecode: z.string().max(20),
     thumbnailDataUrl: z.string().max(600000).optional(),
+    selectionMeta: z.object({
+      sceneId: z.number().int().min(0).optional(),
+      sceneStart: z.number().int().min(0).optional(),
+      sceneEnd: z.number().int().min(0).optional(),
+      candidateScore: z.number().min(0).max(10).optional(),
+      selectionReasons: z.array(z.string().max(50)).max(10).optional(),
+      incidentStartSecond: z.number().int().min(0).optional(),
+      incidentEndSecond: z.number().int().min(0).optional(),
+      incidentCount: z.number().int().min(1).max(999).optional(),
+      incidentSignature: z.string().max(120).optional(),
+    }).optional(),
     risks: z.array(
       z.object({
         category: z.enum(["community_guidelines", "age_restriction", "monetization", "privacy"]),
