@@ -1363,6 +1363,115 @@ function ResultsContent() {
               )}
             </section>
 
+            {/* Fact-Check Summary */}
+            {data.factCheckData && Array.isArray(data.factCheckData.findings) && data.factCheckData.findings.length > 0 && (() => {
+              const findings = data.factCheckData!.findings as FactCheckFinding[];
+              const supported = findings.filter(f => f.verdict === "supported");
+              const contradicted = findings.filter(f => f.verdict === "contradicted");
+              const unclear = findings.filter(f => f.verdict === "unclear" || f.verdict === "needs_external_verification");
+              return (
+                <section>
+                  <h3 className="text-xs uppercase tracking-wider text-[var(--text-dim)] mb-3 flex items-center gap-2">
+                    <span className="w-2 h-2 bg-[var(--text-dim)]" /> Fact-Check Results
+                    <span className="text-[10px] font-normal normal-case tracking-normal text-[var(--text-dim)]">
+                      {findings.length} claims verified
+                    </span>
+                  </h3>
+
+                  {/* Summary bar */}
+                  <div className="flex h-2 mb-4 overflow-hidden border border-[var(--border)]">
+                    {supported.length > 0 && (
+                      <div className="bg-[var(--green)]" style={{ width: `${(supported.length / findings.length) * 100}%` }} />
+                    )}
+                    {unclear.length > 0 && (
+                      <div className="bg-[var(--yellow)]" style={{ width: `${(unclear.length / findings.length) * 100}%` }} />
+                    )}
+                    {contradicted.length > 0 && (
+                      <div className="bg-[var(--red)]" style={{ width: `${(contradicted.length / findings.length) * 100}%` }} />
+                    )}
+                  </div>
+
+                  {/* Summary counts */}
+                  <div className="grid grid-cols-3 gap-3 mb-4">
+                    <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 text-center">
+                      <div className="text-lg text-[var(--green)] tabular-nums">{supported.length}</div>
+                      <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)]">Supported</div>
+                    </div>
+                    <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 text-center">
+                      <div className="text-lg text-[var(--yellow)] tabular-nums">{unclear.length}</div>
+                      <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)]">Unclear</div>
+                    </div>
+                    <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 text-center">
+                      <div className="text-lg text-[var(--red)] tabular-nums">{contradicted.length}</div>
+                      <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)]">Contradicted</div>
+                    </div>
+                  </div>
+
+                  {/* Contradicted claims — show first, these need attention */}
+                  {contradicted.length > 0 && (
+                    <div className="mb-3">
+                      <div className="text-[10px] uppercase tracking-wider text-[var(--red)] mb-2">Needs Correction</div>
+                      <div className="space-y-2">
+                        {contradicted.map((f, i) => (
+                          <div key={i} className="border border-[var(--red)] bg-[var(--bg-surface)] p-3">
+                            <div className="flex items-start gap-2">
+                              <span className="w-2 h-2 bg-[var(--red)] mt-1 flex-shrink-0" />
+                              <div className="flex-1">
+                                <p className="text-sm text-[var(--text)]">{f.claim}</p>
+                                <p className="text-[10px] text-[var(--text-dim)] mt-1">{f.evidence}</p>
+                                {f.line && <span className="text-[10px] text-[var(--text-dim)]">Line {f.line}</span>}
+                                {f.suggestedRewrite && (
+                                  <div className="mt-2 border-t border-[var(--border)] pt-2">
+                                    <span className="text-[10px] uppercase tracking-wider text-[var(--green)]">Suggested fix: </span>
+                                    <span className="text-xs text-[var(--green)]">{f.suggestedRewrite}</span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Unclear claims */}
+                  {unclear.length > 0 && (
+                    <div className="mb-3">
+                      <div className="text-[10px] uppercase tracking-wider text-[var(--yellow)] mb-2">Unverified</div>
+                      <div className="space-y-1">
+                        {unclear.map((f, i) => (
+                          <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-2 flex items-start gap-2">
+                            <span className="w-1.5 h-1.5 bg-[var(--yellow)] mt-1.5 flex-shrink-0" />
+                            <div>
+                              <p className="text-xs text-[var(--text)]">{f.claim}</p>
+                              <p className="text-[10px] text-[var(--text-dim)]">{f.evidence}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Supported — collapsed by default */}
+                  {supported.length > 0 && (
+                    <details className="border border-[var(--border)] bg-[var(--bg-surface)]">
+                      <summary className="px-3 py-2 cursor-pointer text-[10px] uppercase tracking-wider text-[var(--green)] hover:bg-[var(--bg-elevated)]">
+                        {supported.length} Supported Claims
+                      </summary>
+                      <div className="px-3 pb-3 space-y-1">
+                        {supported.map((f, i) => (
+                          <div key={i} className="flex items-start gap-2 py-1">
+                            <span className="w-1.5 h-1.5 bg-[var(--green)] mt-1.5 flex-shrink-0" />
+                            <p className="text-xs text-[var(--text-dim)]">{f.claim}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                </section>
+              );
+            })()}
+
             {report.edsaChecklist?.length > 0 && (
               <section>
                 <h3 className="text-xs uppercase tracking-wider text-[var(--text-dim)] mb-3">
