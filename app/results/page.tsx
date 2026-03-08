@@ -1238,453 +1238,587 @@ function ResultsContent() {
 
       {/* Tab Content */}
       <div className="min-h-[400px]">
-        {activeTab === "overview" && report && (
-          <div className="space-y-6">
-            {criticalEditsWithMoments.length > 0 && (
-              <section>
-                <h3 className="text-sm uppercase tracking-wider text-[var(--red)] mb-3 flex items-center gap-2">
-                  <span className="w-2 h-2 bg-[var(--red)]" /> Critical Edits Required
-                </h3>
-                <div className="space-y-2">
-                  {criticalEditsWithMoments.map(({ edit, moment }, i) => (
-                    <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-4">
-                      <div className="text-sm text-[var(--red)] mb-2 font-medium">
-                        {edit.line ? `Line ${edit.line} — ` : ""}{edit.reason}
-                      </div>
-                      {moment?.thumbnailDataUrl && (
-                        <div className="mb-2">
-                          <img
-                            src={moment.thumbnailDataUrl}
-                            alt={`Related frame at ${moment.timecode}`}
-                            className="max-w-[420px] w-full border border-[var(--border)]"
-                          />
-                          <div className="text-[10px] text-[var(--text-dim)] mt-1">Related video frame: {moment.timecode}</div>
-                        </div>
-                      )}
-                      <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Original</div>
-                      <div className="text-sm text-[var(--text)] mb-2 leading-relaxed border border-[var(--border)] bg-[var(--bg)] p-2">
-                        {smartExcerpt(edit.original, 260, edit.line)}
-                      </div>
-                      <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Suggested</div>
-                      <div className="text-sm text-[var(--green)] leading-relaxed border border-[var(--border)] bg-[var(--bg)] p-2">
-                        {smartExcerpt(edit.suggested, 260, edit.line)}
-                      </div>
-                    </div>
-                  ))}
+        {activeTab === "overview" && report && (() => {
+          const totalFlags = allLegalFlags.length + allPolicyFlags.length;
+          const criticalCount = criticalEditsWithMoments.length;
+          const videoRiskCount = overviewVideoTimeline.length;
+          const factFindings = data.factCheckData?.findings as FactCheckFinding[] | undefined;
+          const factSupported = factFindings?.filter(f => f.verdict === "supported") ?? [];
+          const factContradicted = factFindings?.filter(f => f.verdict === "contradicted") ?? [];
+          const factUnclear = factFindings?.filter(f => f.verdict === "unclear" || f.verdict === "needs_external_verification") ?? [];
+          const factScore = factFindings?.length ? Math.round((factSupported.length / factFindings.length) * 100) : null;
+          return (
+          <div className="space-y-8">
+            {/* ── AT-A-GLANCE STATS ── */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-4">
+                <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-2">Total Flags</div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-2xl font-bold tabular-nums" style={{ color: totalFlags > 10 ? "var(--red)" : totalFlags > 5 ? "var(--yellow)" : "var(--green)" }}>
+                    {totalFlags}
+                  </span>
+                  <span className="text-[10px] text-[var(--text-dim)]">
+                    {allLegalFlags.length} legal / {allPolicyFlags.length} policy
+                  </span>
                 </div>
-              </section>
-            )}
-
-            {recommendedEditsWithMoments.length > 0 && (
-              <section>
-                <h3 className="text-sm uppercase tracking-wider text-[var(--yellow)] mb-3 flex items-center gap-2">
-                  <span className="w-2 h-2 bg-[var(--yellow)]" /> Recommended Edits
-                </h3>
-                <div className="space-y-2">
-                  {recommendedEditsWithMoments.map(({ edit, moment }, i) => (
-                    <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-4">
-                      <div className="text-sm text-[var(--yellow)] mb-2 font-medium">
-                        {edit.line ? `Line ${edit.line} — ` : ""}{edit.reason}
-                      </div>
-                      {moment?.thumbnailDataUrl && (
-                        <div className="mb-2">
-                          <img
-                            src={moment.thumbnailDataUrl}
-                            alt={`Related frame at ${moment.timecode}`}
-                            className="max-w-[420px] w-full border border-[var(--border)]"
-                          />
-                          <div className="text-[10px] text-[var(--text-dim)] mt-1">Related video frame: {moment.timecode}</div>
-                        </div>
-                      )}
-                      <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Original</div>
-                      <div className="text-sm text-[var(--text)] mb-2 leading-relaxed border border-[var(--border)] bg-[var(--bg)] p-2">
-                        {smartExcerpt(edit.original, 260, edit.line)}
-                      </div>
-                      <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Suggested</div>
-                      <div className="text-sm text-[var(--green)] leading-relaxed border border-[var(--border)] bg-[var(--bg)] p-2">
-                        {smartExcerpt(edit.suggested, 260, edit.line)}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {riskyLines.length > 0 && (
-              <section>
-                <h3 className="text-xs uppercase tracking-wider text-[var(--amber)] mb-3 flex items-center gap-2">
-                  <span className="w-2 h-2 bg-[var(--amber)]" /> Risky Lines
-                  {riskyLines.length > 30 && (
-                    <span className="text-[10px] text-[var(--text-dim)] font-normal normal-case tracking-normal ml-2">
-                      Showing 30 of {riskyLines.length} —{" "}
-                      <button onClick={() => setActiveTab("script")} className="underline hover:text-[var(--text)]">
-                        view all in Script tab
-                      </button>
-                    </span>
+              </div>
+              <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-4">
+                <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-2">Critical Edits</div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-2xl font-bold tabular-nums" style={{ color: criticalCount > 0 ? "var(--red)" : "var(--green)" }}>
+                    {criticalCount}
+                  </span>
+                  {recommendedEditsWithMoments.length > 0 && (
+                    <span className="text-[10px] text-[var(--text-dim)]">+ {recommendedEditsWithMoments.length} recommended</span>
                   )}
-                </h3>
-                <div className="space-y-2">
-                  {riskyLines.slice(0, 30).map((item) => (
-                    <div key={item.line} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="text-[10px] text-[var(--text-dim)] border border-[var(--border)] px-1">
-                          L{item.line}
-                        </span>
-                        {item.tags.map((tag) => (
-                          <span key={tag} className="text-[10px] text-[var(--text-dim)] uppercase border border-[var(--border)] px-1">
-                            {formatLabel(tag)}
-                          </span>
-                        ))}
-                      </div>
-                      <div className="text-xs text-[var(--text)]">{item.text || "(blank line)"}</div>
-                    </div>
-                  ))}
                 </div>
-              </section>
+              </div>
+              <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-4">
+                <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-2">Video Risks</div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-2xl font-bold tabular-nums" style={{ color: videoRiskCount > 5 ? "var(--red)" : videoRiskCount > 0 ? "var(--amber)" : "var(--green)" }}>
+                    {videoRiskCount}
+                  </span>
+                  {videoRiskCount > 0 && (
+                    <button onClick={() => setActiveTab("video")} className="text-[10px] text-[var(--text-dim)] underline hover:text-[var(--text)]">view</button>
+                  )}
+                </div>
+              </div>
+              <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-4">
+                <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-2">Fact Accuracy</div>
+                {factScore !== null ? (
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-2xl font-bold tabular-nums" style={{ color: factScore >= 80 ? "var(--green)" : factScore >= 50 ? "var(--yellow)" : "var(--red)" }}>
+                      {factScore}%
+                    </span>
+                    <span className="text-[10px] text-[var(--text-dim)]">{factFindings!.length} claims</span>
+                  </div>
+                ) : (
+                  <span className="text-lg text-[var(--text-dim)]">N/A</span>
+                )}
+              </div>
+            </div>
+
+            {/* ── ACTION REQUIRED ── */}
+            {(criticalEditsWithMoments.length > 0 || recommendedEditsWithMoments.length > 0) && (
+              <div>
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="h-px flex-1 bg-[var(--border)]" />
+                  <span className="text-[10px] uppercase tracking-[0.2em] text-[var(--red)] font-bold">Action Required</span>
+                  <div className="h-px flex-1 bg-[var(--border)]" />
+                </div>
+
+                {criticalEditsWithMoments.length > 0 && (
+                  <section className="mb-6">
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className="w-1 h-5 bg-[var(--red)]" />
+                      <h3 className="text-sm uppercase tracking-wider text-[var(--red)] font-bold">
+                        Critical Edits
+                      </h3>
+                      <span className="text-[10px] px-1.5 py-0.5 bg-[var(--red)] text-[var(--bg)] font-bold tabular-nums">
+                        {criticalEditsWithMoments.length}
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      {criticalEditsWithMoments.map(({ edit, moment }, i) => (
+                        <div key={i} className="border-l-2 border-[var(--red)] bg-[var(--bg-surface)] p-4">
+                          <div className="text-sm text-[var(--text-bright)] mb-2 font-medium">
+                            {edit.line ? `Line ${edit.line} — ` : ""}{edit.reason}
+                          </div>
+                          {moment?.thumbnailDataUrl && (
+                            <div className="mb-3">
+                              <img
+                                src={moment.thumbnailDataUrl}
+                                alt={`Related frame at ${moment.timecode}`}
+                                className="max-w-[420px] w-full border border-[var(--border)]"
+                              />
+                              <div className="text-[10px] text-[var(--text-dim)] mt-1">Related video frame: {moment.timecode}</div>
+                            </div>
+                          )}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                              <div className="text-[10px] uppercase tracking-wider text-[var(--red)] mb-1 font-bold">Remove</div>
+                              <div className="text-sm text-[var(--text)] leading-relaxed bg-[var(--bg)] p-3 border border-[var(--border)]">
+                                {smartExcerpt(edit.original, 300, edit.line)}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-[10px] uppercase tracking-wider text-[var(--green)] mb-1 font-bold">Replace With</div>
+                              <div className="text-sm text-[var(--green)] leading-relaxed bg-[var(--bg)] p-3 border border-[var(--green)] border-opacity-30">
+                                {smartExcerpt(edit.suggested, 300, edit.line)}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                {recommendedEditsWithMoments.length > 0 && (
+                  <section>
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className="w-1 h-5 bg-[var(--yellow)]" />
+                      <h3 className="text-sm uppercase tracking-wider text-[var(--yellow)] font-bold">
+                        Recommended Edits
+                      </h3>
+                      <span className="text-[10px] px-1.5 py-0.5 border border-[var(--yellow)] text-[var(--yellow)] font-bold tabular-nums">
+                        {recommendedEditsWithMoments.length}
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      {recommendedEditsWithMoments.map(({ edit, moment }, i) => (
+                        <div key={i} className="border-l-2 border-[var(--yellow)] bg-[var(--bg-surface)] p-4">
+                          <div className="text-sm text-[var(--text-bright)] mb-2 font-medium">
+                            {edit.line ? `Line ${edit.line} — ` : ""}{edit.reason}
+                          </div>
+                          {moment?.thumbnailDataUrl && (
+                            <div className="mb-3">
+                              <img
+                                src={moment.thumbnailDataUrl}
+                                alt={`Related frame at ${moment.timecode}`}
+                                className="max-w-[420px] w-full border border-[var(--border)]"
+                              />
+                              <div className="text-[10px] text-[var(--text-dim)] mt-1">Related video frame: {moment.timecode}</div>
+                            </div>
+                          )}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                              <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Original</div>
+                              <div className="text-sm text-[var(--text)] leading-relaxed bg-[var(--bg)] p-3 border border-[var(--border)]">
+                                {smartExcerpt(edit.original, 300, edit.line)}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-[10px] uppercase tracking-wider text-[var(--green)] mb-1">Suggested</div>
+                              <div className="text-sm text-[var(--green)] leading-relaxed bg-[var(--bg)] p-3 border border-[var(--border)]">
+                                {smartExcerpt(edit.suggested, 300, edit.line)}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )}
+              </div>
             )}
 
-            {overviewVideoTimeline.length > 0 && (
-              <section>
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-xs uppercase tracking-wider text-[var(--amber)] flex items-center gap-2">
-                    <span className="w-2 h-2 bg-[var(--amber)]" /> Video Timeline
-                  </h3>
-                  <button
-                    onClick={() => setActiveTab("video")}
-                    className="text-[10px] uppercase tracking-wider px-2 py-1 border border-[var(--border)] hover:bg-[var(--bg-elevated)] text-[var(--text-dim)]"
-                  >
-                    Open Full Video Tab
-                  </button>
+            {/* ── ANALYSIS ── */}
+            {(riskyLines.length > 0 || (factFindings && factFindings.length > 0)) && (
+              <div>
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="h-px flex-1 bg-[var(--border)]" />
+                  <span className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-dim)] font-bold">Analysis</span>
+                  <div className="h-px flex-1 bg-[var(--border)]" />
                 </div>
-                <div className="space-y-2">
-                  {overviewVideoTimeline.map((group, i) => {
-                    const item = group.item;
-                    const maxSev = item.risks.reduce((worst, r) =>
-                      (SEV_ORDER[r.severity] ?? 0) > (SEV_ORDER[worst] ?? 0) ? r.severity : worst,
-                    "low");
-                    const categories = [...new Set(item.risks.map(r => r.category.replaceAll("_", " ")))];
-                    return (
-                      <details
-                        key={`${item.timecode}-${i}`}
-                        className="border border-[var(--border)] bg-[var(--bg-surface)]"
-                      >
-                        <summary className="list-none cursor-pointer px-3 py-2 flex items-center gap-3 hover:bg-[var(--bg-elevated)]">
-                          <span className="text-sm font-mono text-[var(--amber)]">
-                            {group.startTimecode === group.endTimecode
-                              ? group.startTimecode
-                              : `${group.startTimecode}–${group.endTimecode}`}
-                          </span>
-                          <span className="text-[10px] uppercase" style={{ color: sevColor(maxSev) }}>{maxSev}</span>
-                          <span className="text-xs text-[var(--text)] truncate">{categories.join(", ")}</span>
-                          <span className="ml-auto text-[10px] text-[var(--text-dim)]">
-                            {group.count} moment{group.count === 1 ? "" : "s"} · {item.risks.length} risk{item.risks.length === 1 ? "" : "s"}
-                          </span>
-                        </summary>
-                        <div className="px-3 pb-3 pt-2 border-t border-[var(--border)] bg-[var(--bg-elevated)]">
-                          {item.thumbnailDataUrl && (
-                            <img
-                              src={item.thumbnailDataUrl}
-                              alt={`Frame at ${item.timecode}`}
-                              className="max-w-[420px] w-full border border-[var(--border)] mb-2"
-                            />
-                          )}
-                          <div className="space-y-2">
-                            {item.risks.map((risk, j) => (
-                              <div key={j} className="border border-[var(--border)] bg-[var(--bg)] p-2">
-                                <div className="flex items-center gap-2 mb-1 flex-wrap">
-                                  <span className="text-[10px] uppercase font-semibold" style={{ color: sevColor(risk.severity) }}>
-                                    {risk.severity}
-                                  </span>
-                                  <span className="text-[10px] text-[var(--text-dim)] uppercase border border-[var(--border)] px-1.5 py-0.5">
-                                    {risk.category.replaceAll("_", " ")}
-                                  </span>
-                                  {risk.policyName && (
-                                    <span className="text-[10px] text-[var(--text-dim)]">{risk.policyName}</span>
-                                  )}
+
+                {/* Fact-Check Results */}
+                {factFindings && factFindings.length > 0 && (
+                  <section className="border border-[var(--border)] bg-[var(--bg-surface)] p-5 mb-4">
+                    <div className="flex items-center gap-2 mb-4">
+                      <div className="w-1 h-5 bg-[var(--text-dim)]" />
+                      <h3 className="text-sm uppercase tracking-wider text-[var(--text-bright)] font-bold">
+                        Fact-Check Results
+                      </h3>
+                      <span className="text-[10px] text-[var(--text-dim)] ml-auto">{factFindings.length} claims verified</span>
+                    </div>
+
+                    {/* Summary bar */}
+                    <div className="flex h-3 mb-4 overflow-hidden border border-[var(--border)] rounded-sm">
+                      {factSupported.length > 0 && (
+                        <div className="bg-[var(--green)] transition-all" style={{ width: `${(factSupported.length / factFindings.length) * 100}%` }} title={`${factSupported.length} supported`} />
+                      )}
+                      {factUnclear.length > 0 && (
+                        <div className="bg-[var(--yellow)] transition-all" style={{ width: `${(factUnclear.length / factFindings.length) * 100}%` }} title={`${factUnclear.length} unclear`} />
+                      )}
+                      {factContradicted.length > 0 && (
+                        <div className="bg-[var(--red)] transition-all" style={{ width: `${(factContradicted.length / factFindings.length) * 100}%` }} title={`${factContradicted.length} contradicted`} />
+                      )}
+                    </div>
+
+                    {/* Summary counts */}
+                    <div className="grid grid-cols-3 gap-3 mb-4">
+                      <div className="text-center p-2 bg-[var(--bg)] border border-[var(--border)]">
+                        <div className="text-xl font-bold text-[var(--green)] tabular-nums">{factSupported.length}</div>
+                        <div className="text-[9px] uppercase tracking-wider text-[var(--text-dim)]">Supported</div>
+                      </div>
+                      <div className="text-center p-2 bg-[var(--bg)] border border-[var(--border)]">
+                        <div className="text-xl font-bold text-[var(--yellow)] tabular-nums">{factUnclear.length}</div>
+                        <div className="text-[9px] uppercase tracking-wider text-[var(--text-dim)]">Unclear</div>
+                      </div>
+                      <div className="text-center p-2 bg-[var(--bg)] border border-[var(--border)]">
+                        <div className="text-xl font-bold text-[var(--red)] tabular-nums">{factContradicted.length}</div>
+                        <div className="text-[9px] uppercase tracking-wider text-[var(--text-dim)]">Contradicted</div>
+                      </div>
+                    </div>
+
+                    {/* Contradicted claims */}
+                    {factContradicted.length > 0 && (
+                      <div className="mb-3">
+                        <div className="text-[10px] uppercase tracking-wider text-[var(--red)] mb-2 font-bold">Needs Correction</div>
+                        <div className="space-y-2">
+                          {factContradicted.map((f, i) => (
+                            <div key={i} className="border-l-2 border-[var(--red)] bg-[var(--bg)] p-3">
+                              <p className="text-sm text-[var(--text)]">{f.claim}</p>
+                              <p className="text-[10px] text-[var(--text-dim)] mt-1">{f.evidence}</p>
+                              {f.line && <span className="text-[10px] text-[var(--text-dim)]">Line {f.line}</span>}
+                              {f.suggestedRewrite && (
+                                <div className="mt-2 border-t border-[var(--border)] pt-2">
+                                  <span className="text-[10px] uppercase tracking-wider text-[var(--green)]">Suggested fix: </span>
+                                  <span className="text-xs text-[var(--green)]">{f.suggestedRewrite}</span>
                                 </div>
-                                <p className="text-xs text-[var(--text)] leading-relaxed">{risk.reasoning}</p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Unclear claims */}
+                    {factUnclear.length > 0 && (
+                      <div className="mb-3">
+                        <div className="text-[10px] uppercase tracking-wider text-[var(--yellow)] mb-2">Unverified</div>
+                        <div className="space-y-1">
+                          {factUnclear.map((f, i) => (
+                            <div key={i} className="border-l-2 border-[var(--yellow)] bg-[var(--bg)] p-2 flex items-start gap-2">
+                              <div>
+                                <p className="text-xs text-[var(--text)]">{f.claim}</p>
+                                <p className="text-[10px] text-[var(--text-dim)]">{f.evidence}</p>
                               </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Supported — collapsed */}
+                    {factSupported.length > 0 && (
+                      <details className="border border-[var(--border)] bg-[var(--bg)]">
+                        <summary className="px-3 py-2 cursor-pointer text-[10px] uppercase tracking-wider text-[var(--green)] hover:bg-[var(--bg-elevated)]">
+                          {factSupported.length} Supported Claims
+                        </summary>
+                        <div className="px-3 pb-3 space-y-1">
+                          {factSupported.map((f, i) => (
+                            <div key={i} className="flex items-start gap-2 py-1">
+                              <span className="w-1.5 h-1.5 bg-[var(--green)] mt-1.5 flex-shrink-0" />
+                              <p className="text-xs text-[var(--text-dim)]">{f.claim}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
+                  </section>
+                )}
+
+                {/* Risky Lines */}
+                {riskyLines.length > 0 && (
+                  <section className="border border-[var(--border)] bg-[var(--bg-surface)] p-5">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <div className="w-1 h-5 bg-[var(--amber)]" />
+                        <h3 className="text-sm uppercase tracking-wider text-[var(--amber)] font-bold">
+                          Risky Lines
+                        </h3>
+                        <span className="text-[10px] px-1.5 py-0.5 border border-[var(--amber)] text-[var(--amber)] font-bold tabular-nums">
+                          {riskyLines.length}
+                        </span>
+                      </div>
+                      <button onClick={() => setActiveTab("script")} className="text-[10px] uppercase tracking-wider px-2 py-1 border border-[var(--border)] hover:bg-[var(--bg-elevated)] text-[var(--text-dim)]">
+                        View in Script
+                      </button>
+                    </div>
+                    <div className="space-y-1.5">
+                      {riskyLines.slice(0, 15).map((item) => (
+                        <div key={item.line} className="flex items-center gap-3 border-l-2 border-[var(--amber)] bg-[var(--bg)] px-3 py-2">
+                          <span className="text-[10px] text-[var(--text-dim)] font-mono w-8 text-right flex-shrink-0">
+                            L{item.line}
+                          </span>
+                          <span className="text-xs text-[var(--text)] flex-1 truncate">{item.text || "(blank line)"}</span>
+                          <div className="flex gap-1 flex-shrink-0">
+                            {item.tags.slice(0, 2).map((tag) => (
+                              <span key={tag} className="text-[9px] text-[var(--text-dim)] uppercase border border-[var(--border)] px-1">
+                                {formatLabel(tag)}
+                              </span>
                             ))}
                           </div>
                         </div>
-                      </details>
-                    );
-                  })}
-                </div>
-              </section>
-            )}
-
-            {/* Disclaimer Generator */}
-            <section>
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-xs uppercase tracking-wider text-[var(--text-dim)] flex items-center gap-2">
-                  <span className="w-2 h-2 bg-[var(--text-dim)]" /> Suggested Disclaimers
-                </h3>
-                <button
-                  onClick={() => setShowDisclaimers(!showDisclaimers)}
-                  className="text-[10px] uppercase tracking-wider px-2 py-1 border border-[var(--border)] hover:bg-[var(--bg-elevated)] text-[var(--text-dim)]"
-                  data-no-print
-                >
-                  {showDisclaimers ? "Hide" : "Generate"}
-                </button>
-              </div>
-              {showDisclaimers && (
-                <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-4 space-y-3">
-                  {disclaimers.map((d, i) => (
-                    <p key={i} className="text-sm text-[var(--text)] leading-relaxed">
-                      {d}
-                    </p>
-                  ))}
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(disclaimers.join("\n\n"));
-                      setCopied("disclaimer");
-                      setTimeout(() => setCopied(null), 2000);
-                    }}
-                    className="text-[10px] uppercase tracking-wider px-3 py-1 border border-[var(--border)] hover:bg-[var(--bg-elevated)] text-[var(--text-dim)]"
-                    data-no-print
-                  >
-                    {copied === "disclaimer" ? "COPIED" : "COPY ALL"}
-                  </button>
-                </div>
-              )}
-            </section>
-
-            {/* Fact-Check Summary */}
-            {data.factCheckData && Array.isArray(data.factCheckData.findings) && data.factCheckData.findings.length > 0 && (() => {
-              const findings = data.factCheckData!.findings as FactCheckFinding[];
-              const supported = findings.filter(f => f.verdict === "supported");
-              const contradicted = findings.filter(f => f.verdict === "contradicted");
-              const unclear = findings.filter(f => f.verdict === "unclear" || f.verdict === "needs_external_verification");
-              return (
-                <section>
-                  <h3 className="text-xs uppercase tracking-wider text-[var(--text-dim)] mb-3 flex items-center gap-2">
-                    <span className="w-2 h-2 bg-[var(--text-dim)]" /> Fact-Check Results
-                    <span className="text-[10px] font-normal normal-case tracking-normal text-[var(--text-dim)]">
-                      {findings.length} claims verified
-                    </span>
-                  </h3>
-
-                  {/* Summary bar */}
-                  <div className="flex h-2 mb-4 overflow-hidden border border-[var(--border)]">
-                    {supported.length > 0 && (
-                      <div className="bg-[var(--green)]" style={{ width: `${(supported.length / findings.length) * 100}%` }} />
-                    )}
-                    {unclear.length > 0 && (
-                      <div className="bg-[var(--yellow)]" style={{ width: `${(unclear.length / findings.length) * 100}%` }} />
-                    )}
-                    {contradicted.length > 0 && (
-                      <div className="bg-[var(--red)]" style={{ width: `${(contradicted.length / findings.length) * 100}%` }} />
-                    )}
-                  </div>
-
-                  {/* Summary counts */}
-                  <div className="grid grid-cols-3 gap-3 mb-4">
-                    <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 text-center">
-                      <div className="text-lg text-[var(--green)] tabular-nums">{supported.length}</div>
-                      <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)]">Supported</div>
-                    </div>
-                    <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 text-center">
-                      <div className="text-lg text-[var(--yellow)] tabular-nums">{unclear.length}</div>
-                      <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)]">Unclear</div>
-                    </div>
-                    <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 text-center">
-                      <div className="text-lg text-[var(--red)] tabular-nums">{contradicted.length}</div>
-                      <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)]">Contradicted</div>
-                    </div>
-                  </div>
-
-                  {/* Contradicted claims — show first, these need attention */}
-                  {contradicted.length > 0 && (
-                    <div className="mb-3">
-                      <div className="text-[10px] uppercase tracking-wider text-[var(--red)] mb-2">Needs Correction</div>
-                      <div className="space-y-2">
-                        {contradicted.map((f, i) => (
-                          <div key={i} className="border border-[var(--red)] bg-[var(--bg-surface)] p-3">
-                            <div className="flex items-start gap-2">
-                              <span className="w-2 h-2 bg-[var(--red)] mt-1 flex-shrink-0" />
-                              <div className="flex-1">
-                                <p className="text-sm text-[var(--text)]">{f.claim}</p>
-                                <p className="text-[10px] text-[var(--text-dim)] mt-1">{f.evidence}</p>
-                                {f.line && <span className="text-[10px] text-[var(--text-dim)]">Line {f.line}</span>}
-                                {f.suggestedRewrite && (
-                                  <div className="mt-2 border-t border-[var(--border)] pt-2">
-                                    <span className="text-[10px] uppercase tracking-wider text-[var(--green)]">Suggested fix: </span>
-                                    <span className="text-xs text-[var(--green)]">{f.suggestedRewrite}</span>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Unclear claims */}
-                  {unclear.length > 0 && (
-                    <div className="mb-3">
-                      <div className="text-[10px] uppercase tracking-wider text-[var(--yellow)] mb-2">Unverified</div>
-                      <div className="space-y-1">
-                        {unclear.map((f, i) => (
-                          <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-2 flex items-start gap-2">
-                            <span className="w-1.5 h-1.5 bg-[var(--yellow)] mt-1.5 flex-shrink-0" />
-                            <div>
-                              <p className="text-xs text-[var(--text)]">{f.claim}</p>
-                              <p className="text-[10px] text-[var(--text-dim)]">{f.evidence}</p>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Supported — collapsed by default */}
-                  {supported.length > 0 && (
-                    <details className="border border-[var(--border)] bg-[var(--bg-surface)]">
-                      <summary className="px-3 py-2 cursor-pointer text-[10px] uppercase tracking-wider text-[var(--green)] hover:bg-[var(--bg-elevated)]">
-                        {supported.length} Supported Claims
-                      </summary>
-                      <div className="px-3 pb-3 space-y-1">
-                        {supported.map((f, i) => (
-                          <div key={i} className="flex items-start gap-2 py-1">
-                            <span className="w-1.5 h-1.5 bg-[var(--green)] mt-1.5 flex-shrink-0" />
-                            <p className="text-xs text-[var(--text-dim)]">{f.claim}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </details>
-                  )}
-                </section>
-              );
-            })()}
-
-            {report.edsaChecklist?.length > 0 && (
-              <section>
-                <h3 className="text-xs uppercase tracking-wider text-[var(--text-dim)] mb-3">
-                  EDSA Context Checklist
-                </h3>
-                <div className="space-y-1">
-                  {report.edsaChecklist.map((item, i) => (
-                    <div key={i} className="flex items-center gap-2 text-xs">
-                      <span
-                        className="w-2 h-2 flex-shrink-0"
-                        style={{
-                          background:
-                            item.status === "present" ? "var(--green)" :
-                            item.status === "partial" ? "var(--yellow)" : "var(--red)",
-                        }}
-                      />
-                      <span>{item.item}</span>
-                      {item.note && (
-                        <span className="text-[var(--text-dim)]">— {item.note}</span>
+                      ))}
+                      {riskyLines.length > 15 && (
+                        <div className="text-[10px] text-[var(--text-dim)] text-center pt-2">
+                          + {riskyLines.length - 15} more lines —{" "}
+                          <button onClick={() => setActiveTab("script")} className="underline hover:text-[var(--text)]">
+                            view all in Script tab
+                          </button>
+                        </div>
                       )}
                     </div>
-                  ))}
-                </div>
-              </section>
+                  </section>
+                )}
+              </div>
             )}
 
-            {data.supplementalDocs && data.supplementalDocs.length > 0 && (
-              <section>
-                <h3 className="text-xs uppercase tracking-wider text-[var(--text-dim)] mb-3 flex items-center gap-2">
-                  <span className="w-2 h-2 bg-[var(--text-dim)]" /> Supplemental Documentation
-                </h3>
-                <div className="space-y-2">
-                  {data.supplementalDocs.map((doc, i) => (
-                    <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="text-xs text-[var(--text-bright)]">{doc.fileName}</span>
-                        <span className="text-[10px] text-[var(--text-dim)] uppercase border border-[var(--border)] px-1">
-                          {doc.docType.replace(/_/g, " ")}
+            {/* ── CONTENT ── */}
+            {(overviewVideoTimeline.length > 0 || report.edsaChecklist?.length > 0 || disclaimers.length > 0 ||
+              (data.supplementalDocs && data.supplementalDocs.length > 0)) && (
+              <div>
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="h-px flex-1 bg-[var(--border)]" />
+                  <span className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-dim)] font-bold">Content</span>
+                  <div className="h-px flex-1 bg-[var(--border)]" />
+                </div>
+
+                {/* Video Timeline */}
+                {overviewVideoTimeline.length > 0 && (
+                  <section className="border border-[var(--border)] bg-[var(--bg-surface)] p-5 mb-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <div className="w-1 h-5 bg-[var(--amber)]" />
+                        <h3 className="text-sm uppercase tracking-wider text-[var(--text-bright)] font-bold">Video Timeline</h3>
+                        <span className="text-[10px] px-1.5 py-0.5 border border-[var(--border)] text-[var(--text-dim)] tabular-nums">
+                          {overviewVideoTimeline.length}
                         </span>
                       </div>
-                      <div className="text-xs text-[var(--text-dim)] mb-2">{doc.summary}</div>
-                      {doc.verifiableFacts?.length > 0 && (
-                        <div className="text-[10px] space-y-1">
-                          {(expandedDocs.has(i) ? doc.verifiableFacts : doc.verifiableFacts.slice(0, 5)).map((f, j) => (
-                            <div key={j} className="flex items-start gap-1">
-                              <span
-                                className="flex-shrink-0 mt-0.5"
-                                style={{
-                                  color: f.confidence === "confirmed" ? "var(--green)" :
-                                    f.confidence === "likely" ? "var(--yellow)" : "var(--text-dim)",
-                                }}
-                              >
-                                [{f.confidence.toUpperCase()}]
+                      <button
+                        onClick={() => setActiveTab("video")}
+                        className="text-[10px] uppercase tracking-wider px-2 py-1 border border-[var(--border)] hover:bg-[var(--bg-elevated)] text-[var(--text-dim)]"
+                      >
+                        Full Video Tab
+                      </button>
+                    </div>
+                    <div className="space-y-1.5">
+                      {overviewVideoTimeline.map((group, i) => {
+                        const item = group.item;
+                        const maxSev = item.risks.reduce((worst, r) =>
+                          (SEV_ORDER[r.severity] ?? 0) > (SEV_ORDER[worst] ?? 0) ? r.severity : worst,
+                        "low");
+                        const categories = [...new Set(item.risks.map(r => r.category.replaceAll("_", " ")))];
+                        return (
+                          <details
+                            key={`${item.timecode}-${i}`}
+                            className="border-l-2 bg-[var(--bg)]"
+                            style={{ borderColor: sevColor(maxSev) }}
+                          >
+                            <summary className="list-none cursor-pointer px-3 py-2 flex items-center gap-3 hover:bg-[var(--bg-elevated)]">
+                              <span className="text-sm font-mono" style={{ color: sevColor(maxSev) }}>
+                                {group.startTimecode === group.endTimecode
+                                  ? group.startTimecode
+                                  : `${group.startTimecode}–${group.endTimecode}`}
                               </span>
-                              <span className="text-[var(--text)]">{f.claim}</span>
+                              <span className="text-[10px] uppercase px-1 py-0.5 border" style={{ color: sevColor(maxSev), borderColor: sevColor(maxSev) }}>{maxSev}</span>
+                              <span className="text-xs text-[var(--text)] truncate flex-1">{categories.join(", ")}</span>
+                              <span className="text-[10px] text-[var(--text-dim)] flex-shrink-0">
+                                {group.count} moment{group.count === 1 ? "" : "s"}
+                              </span>
+                            </summary>
+                            <div className="px-3 pb-3 pt-2 border-t border-[var(--border)] bg-[var(--bg-elevated)]">
+                              {item.thumbnailDataUrl && (
+                                <img
+                                  src={item.thumbnailDataUrl}
+                                  alt={`Frame at ${item.timecode}`}
+                                  className="max-w-[420px] w-full border border-[var(--border)] mb-2"
+                                />
+                              )}
+                              <div className="space-y-2">
+                                {item.risks.map((risk, j) => (
+                                  <div key={j} className="border border-[var(--border)] bg-[var(--bg)] p-2">
+                                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                      <span className="text-[10px] uppercase font-semibold" style={{ color: sevColor(risk.severity) }}>
+                                        {risk.severity}
+                                      </span>
+                                      <span className="text-[10px] text-[var(--text-dim)] uppercase border border-[var(--border)] px-1.5 py-0.5">
+                                        {risk.category.replaceAll("_", " ")}
+                                      </span>
+                                      {risk.policyName && (
+                                        <span className="text-[10px] text-[var(--text-dim)]">{risk.policyName}</span>
+                                      )}
+                                    </div>
+                                    <p className="text-xs text-[var(--text)] leading-relaxed">{risk.reasoning}</p>
+                                  </div>
+                                ))}
+                              </div>
                             </div>
-                          ))}
-                          {doc.verifiableFacts.length > 5 && (
-                            <button
-                              onClick={() => {
-                                setExpandedDocs(prev => {
-                                  const next = new Set(prev);
-                                  if (next.has(i)) next.delete(i);
-                                  else next.add(i);
-                                  return next;
-                                });
-                              }}
-                              className="text-[var(--text-dim)] hover:text-[var(--text)] underline cursor-pointer"
-                            >
-                              {expandedDocs.has(i)
-                                ? "Show less"
-                                : `+ ${doc.verifiableFacts.length - 5} more facts`}
-                            </button>
+                          </details>
+                        );
+                      })}
+                    </div>
+                  </section>
+                )}
+
+                {/* EDSA Checklist */}
+                {report.edsaChecklist?.length > 0 && (
+                  <section className="border border-[var(--border)] bg-[var(--bg-surface)] p-5 mb-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className="w-1 h-5 bg-[var(--text-dim)]" />
+                      <h3 className="text-sm uppercase tracking-wider text-[var(--text-bright)] font-bold">EDSA Context Checklist</h3>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      {report.edsaChecklist.map((item, i) => (
+                        <div key={i} className="flex items-center gap-2 text-xs bg-[var(--bg)] px-3 py-2 border border-[var(--border)]">
+                          <span
+                            className="w-2.5 h-2.5 flex-shrink-0"
+                            style={{
+                              background:
+                                item.status === "present" ? "var(--green)" :
+                                item.status === "partial" ? "var(--yellow)" : "var(--red)",
+                            }}
+                          />
+                          <span className="text-[var(--text)]">{item.item}</span>
+                          {item.note && (
+                            <span className="text-[var(--text-dim)] ml-auto text-[10px] truncate max-w-[200px]">
+                              {item.note}
+                            </span>
                           )}
                         </div>
-                      )}
+                      ))}
                     </div>
-                  ))}
-                </div>
-              </section>
-            )}
+                  </section>
+                )}
 
-            {/* Evidence Cross-Reference */}
-            {data.supplementalDocs && data.supplementalDocs.length > 0 && data.factCheckData &&
-              data.factCheckData.findings.some((f: FactCheckFinding) => f.basis === "documents") && (
-              <section>
-                <h3 className="text-xs uppercase tracking-wider text-[var(--text-dim)] mb-3 flex items-center gap-2">
-                  <span className="w-2 h-2 bg-[var(--text-dim)]" /> Evidence Cross-Reference
-                  <span className="text-[10px] font-normal normal-case tracking-normal">
-                    Claims verified against uploaded documents
-                  </span>
-                </h3>
-                <div className="space-y-2">
-                  {data.factCheckData.findings
-                    .filter((f: FactCheckFinding) => f.basis === "documents")
-                    .map((f: FactCheckFinding, i: number) => {
-                      const verdictColors: Record<string, string> = {
-                        supported: "var(--green)", contradicted: "var(--red)", unclear: "var(--yellow)", needs_external_verification: "var(--text-dim)",
-                      };
-                      const color = verdictColors[f.verdict] ?? "var(--text-dim)";
-                      // Find which doc likely contains this evidence
-                      const matchingDoc = data.supplementalDocs?.find(doc =>
-                        doc.verifiableFacts?.some(vf => f.evidence.toLowerCase().includes(vf.claim.toLowerCase().slice(0, 30)))
-                      );
-                      return (
-                        <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
-                          <div className="flex items-center gap-2 mb-1 flex-wrap">
-                            <span className="w-2 h-2" style={{ background: color }} />
-                            <span className="text-[10px] uppercase" style={{ color }}>{f.verdict.replace(/_/g, " ")}</span>
-                            {f.line && <span className="text-[10px] text-[var(--text-dim)]">Line {f.line}</span>}
-                            {matchingDoc && (
-                              <span className="text-[10px] px-1 border border-[var(--border)] text-[var(--text-dim)]">
-                                Source: {matchingDoc.fileName}
-                              </span>
-                            )}
+                {/* Disclaimers */}
+                <section className="border border-[var(--border)] bg-[var(--bg-surface)] p-5 mb-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-1 h-5 bg-[var(--text-dim)]" />
+                      <h3 className="text-sm uppercase tracking-wider text-[var(--text-bright)] font-bold">Suggested Disclaimers</h3>
+                    </div>
+                    <button
+                      onClick={() => setShowDisclaimers(!showDisclaimers)}
+                      className="text-[10px] uppercase tracking-wider px-3 py-1 border border-[var(--border)] hover:bg-[var(--bg-elevated)] text-[var(--text-dim)]"
+                      data-no-print
+                    >
+                      {showDisclaimers ? "Hide" : "Generate"}
+                    </button>
+                  </div>
+                  {showDisclaimers && (
+                    <div className="space-y-3">
+                      {disclaimers.map((d, i) => (
+                        <p key={i} className="text-sm text-[var(--text)] leading-relaxed bg-[var(--bg)] p-3 border border-[var(--border)]">
+                          {d}
+                        </p>
+                      ))}
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(disclaimers.join("\n\n"));
+                          setCopied("disclaimer");
+                          setTimeout(() => setCopied(null), 2000);
+                        }}
+                        className="text-[10px] uppercase tracking-wider px-3 py-1 border border-[var(--border)] hover:bg-[var(--bg-elevated)] text-[var(--text-dim)]"
+                        data-no-print
+                      >
+                        {copied === "disclaimer" ? "COPIED" : "COPY ALL"}
+                      </button>
+                    </div>
+                  )}
+                </section>
+
+                {/* Supplemental Documentation */}
+                {data.supplementalDocs && data.supplementalDocs.length > 0 && (
+                  <section className="border border-[var(--border)] bg-[var(--bg-surface)] p-5 mb-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className="w-1 h-5 bg-[var(--text-dim)]" />
+                      <h3 className="text-sm uppercase tracking-wider text-[var(--text-bright)] font-bold">Supplemental Documentation</h3>
+                      <span className="text-[10px] px-1.5 py-0.5 border border-[var(--border)] text-[var(--text-dim)] tabular-nums">
+                        {data.supplementalDocs.length}
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      {data.supplementalDocs.map((doc, i) => (
+                        <div key={i} className="bg-[var(--bg)] border border-[var(--border)] p-3">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-xs text-[var(--text-bright)] font-medium">{doc.fileName}</span>
+                            <span className="text-[10px] text-[var(--text-dim)] uppercase border border-[var(--border)] px-1">
+                              {doc.docType.replace(/_/g, " ")}
+                            </span>
                           </div>
-                          <p className="text-xs text-[var(--text)] mb-1">Script: {f.claim}</p>
-                          <p className="text-[10px] text-[var(--text-dim)]">Evidence: {f.evidence}</p>
+                          <div className="text-xs text-[var(--text-dim)] mb-2">{doc.summary}</div>
+                          {doc.verifiableFacts?.length > 0 && (
+                            <div className="text-[10px] space-y-1">
+                              {(expandedDocs.has(i) ? doc.verifiableFacts : doc.verifiableFacts.slice(0, 5)).map((f, j) => (
+                                <div key={j} className="flex items-start gap-1">
+                                  <span
+                                    className="flex-shrink-0 mt-0.5"
+                                    style={{
+                                      color: f.confidence === "confirmed" ? "var(--green)" :
+                                        f.confidence === "likely" ? "var(--yellow)" : "var(--text-dim)",
+                                    }}
+                                  >
+                                    [{f.confidence.toUpperCase()}]
+                                  </span>
+                                  <span className="text-[var(--text)]">{f.claim}</span>
+                                </div>
+                              ))}
+                              {doc.verifiableFacts.length > 5 && (
+                                <button
+                                  onClick={() => {
+                                    setExpandedDocs(prev => {
+                                      const next = new Set(prev);
+                                      if (next.has(i)) next.delete(i);
+                                      else next.add(i);
+                                      return next;
+                                    });
+                                  }}
+                                  className="text-[var(--text-dim)] hover:text-[var(--text)] underline cursor-pointer"
+                                >
+                                  {expandedDocs.has(i)
+                                    ? "Show less"
+                                    : `+ ${doc.verifiableFacts.length - 5} more facts`}
+                                </button>
+                              )}
+                            </div>
+                          )}
                         </div>
-                      );
-                    })}
-                </div>
-              </section>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                {/* Evidence Cross-Reference */}
+                {data.supplementalDocs && data.supplementalDocs.length > 0 && data.factCheckData &&
+                  data.factCheckData.findings.some((f: FactCheckFinding) => f.basis === "documents") && (
+                  <section className="border border-[var(--border)] bg-[var(--bg-surface)] p-5">
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className="w-1 h-5 bg-[var(--text-dim)]" />
+                      <h3 className="text-sm uppercase tracking-wider text-[var(--text-bright)] font-bold">Evidence Cross-Reference</h3>
+                      <span className="text-[10px] text-[var(--text-dim)] ml-auto">
+                        Claims verified against uploaded documents
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      {data.factCheckData.findings
+                        .filter((f: FactCheckFinding) => f.basis === "documents")
+                        .map((f: FactCheckFinding, i: number) => {
+                          const verdictColors: Record<string, string> = {
+                            supported: "var(--green)", contradicted: "var(--red)", unclear: "var(--yellow)", needs_external_verification: "var(--text-dim)",
+                          };
+                          const color = verdictColors[f.verdict] ?? "var(--text-dim)";
+                          const matchingDoc = data.supplementalDocs?.find(doc =>
+                            doc.verifiableFacts?.some(vf => f.evidence.toLowerCase().includes(vf.claim.toLowerCase().slice(0, 30)))
+                          );
+                          return (
+                            <div key={i} className="border-l-2 bg-[var(--bg)] p-3" style={{ borderColor: color }}>
+                              <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                <span className="text-[10px] uppercase font-bold" style={{ color }}>{f.verdict.replace(/_/g, " ")}</span>
+                                {f.line && <span className="text-[10px] text-[var(--text-dim)]">Line {f.line}</span>}
+                                {matchingDoc && (
+                                  <span className="text-[10px] px-1 border border-[var(--border)] text-[var(--text-dim)]">
+                                    Source: {matchingDoc.fileName}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-[var(--text)] mb-1">{f.claim}</p>
+                              <p className="text-[10px] text-[var(--text-dim)]">{f.evidence}</p>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </section>
+                )}
+              </div>
             )}
           </div>
-        )}
+          );
+        })()}
 
         {activeTab === "script" && data.scriptText && (
           <div>
