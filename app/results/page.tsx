@@ -43,6 +43,16 @@ function smartExcerpt(text: string, maxLen: number, targetLine?: number): string
   return text.slice(0, maxLen - 1) + "\u2026";
 }
 
+function bestFlagExcerpt(flagTexts: string[], maxLen: number): string | null {
+  const candidates = flagTexts
+    .map((text) => text.trim())
+    .filter(Boolean)
+    .sort((a, b) => a.length - b.length);
+
+  if (candidates.length === 0) return null;
+  return smartExcerpt(candidates[0], maxLen);
+}
+
 /* ── Severity utilities ── */
 type Severity = "low" | "medium" | "high" | "severe";
 const SEV_ORDER: Record<string, number> = { low: 0, medium: 1, high: 2, severe: 3 };
@@ -273,9 +283,11 @@ function getRiskyLines(
       if (!text.trim() && flagTexts.length > 0) {
         text = flagTexts[0];
       }
-      // Truncate long text (e.g. entire transcript on one line)
-      if (text.length > 200) {
-        text = text.slice(0, 200) + "…";
+      // Prefer the actual flagged excerpt if the source line is a giant transcript block.
+      if (text.length > 200 && flagTexts.length > 0) {
+        text = bestFlagExcerpt(flagTexts, 200) ?? text;
+      } else if (text.length > 200) {
+        text = smartExcerpt(text, 200, line);
       }
       return { line, text: text || "(blank line)", tags: [...tags] };
     });
@@ -1164,11 +1176,11 @@ function ResultsContent() {
                       )}
                       <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Original</div>
                       <div className="text-sm text-[var(--text)] mb-2 leading-relaxed border border-[var(--border)] bg-[var(--bg)] p-2">
-                        {edit.original}
+                        {smartExcerpt(edit.original, 260, edit.line)}
                       </div>
                       <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Suggested</div>
                       <div className="text-sm text-[var(--green)] leading-relaxed border border-[var(--border)] bg-[var(--bg)] p-2">
-                        {edit.suggested}
+                        {smartExcerpt(edit.suggested, 260, edit.line)}
                       </div>
                     </div>
                   ))}
@@ -1199,11 +1211,11 @@ function ResultsContent() {
                       )}
                       <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Original</div>
                       <div className="text-sm text-[var(--text)] mb-2 leading-relaxed border border-[var(--border)] bg-[var(--bg)] p-2">
-                        {edit.original}
+                        {smartExcerpt(edit.original, 260, edit.line)}
                       </div>
                       <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Suggested</div>
                       <div className="text-sm text-[var(--green)] leading-relaxed border border-[var(--border)] bg-[var(--bg)] p-2">
-                        {edit.suggested}
+                        {smartExcerpt(edit.suggested, 260, edit.line)}
                       </div>
                     </div>
                   ))}
@@ -1610,7 +1622,7 @@ function ResultsContent() {
                     <span className="text-[var(--text-bright)]">{data.legalCrossValidation.claude.length} flags</span>
                   </div>
                   <div>
-                    <span className="text-[var(--text-dim)]">GPT-5.2: </span>
+                    <span className="text-[var(--text-dim)]">GPT-5.4: </span>
                     <span className="text-[var(--text-bright)]">{data.legalCrossValidation.gpt.length} flags</span>
                   </div>
                 </div>
@@ -1654,7 +1666,7 @@ function ResultsContent() {
                     key={i}
                     data-nav-item
                     className={`border bg-[var(--bg-surface)] p-3 transition-colors ${
-                      dismissed ? "opacity-50 line-through" : ""
+                      dismissed ? "opacity-50" : ""
                     } ${
                       navActiveIndex === i ? "border-[var(--text-bright)] ring-1 ring-[var(--text-bright)]" : "border-[var(--border)]"
                     }`}
@@ -1819,7 +1831,7 @@ function ResultsContent() {
                     key={i}
                     data-nav-item
                     className={`border bg-[var(--bg-surface)] p-3 transition-colors ${
-                      dismissed ? "opacity-50 line-through" : ""
+                      dismissed ? "opacity-50" : ""
                     } ${
                       navActiveIndex === i ? "border-[var(--text-bright)] ring-1 ring-[var(--text-bright)]" : "border-[var(--border)]"
                     }`}

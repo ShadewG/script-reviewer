@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { runPipeline } from "@/lib/pipeline/orchestrator";
+import { normalizeScriptForAnalysis } from "@/lib/utils/normalize-script";
 import type { CaseMetadata, StageUpdate, VideoFrameFinding } from "@/lib/pipeline/types";
 import type { DocumentFacts } from "@/lib/documents/types";
 
@@ -34,9 +36,28 @@ export async function POST(
       : undefined,
   };
 
+  const normalizedScriptText = normalizeScriptForAnalysis(review.scriptText);
+  const shouldResetCheckpoints = normalizedScriptText !== review.scriptText;
+
   await prisma.review.update({
     where: { id },
-    data: { status: "processing", error: null },
+    data: {
+      status: "processing",
+      error: null,
+      scriptText: normalizedScriptText,
+      ...(shouldResetCheckpoints
+        ? {
+            parsedEntities: Prisma.JsonNull,
+            youtubeFlags: Prisma.JsonNull,
+            researchData: Prisma.JsonNull,
+            factCheckData: Prisma.JsonNull,
+            legalFlags: Prisma.JsonNull,
+            legalCrossValidation: Prisma.JsonNull,
+            synthesis: Prisma.JsonNull,
+            analysisWarnings: [] as never,
+          }
+        : {}),
+    },
   });
 
   const encoder = new TextEncoder();
@@ -51,7 +72,7 @@ export async function POST(
       };
 
       try {
-        const report = await runPipeline(review.id, review.scriptText, metadata, onProgress);
+        const report = await runPipeline(review.id, normalizedScriptText, metadata, onProgress);
         send({ type: "complete", reviewId: review.id, report });
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Pipeline failed";

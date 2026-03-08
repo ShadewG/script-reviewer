@@ -190,6 +190,42 @@ function excerptAroundAddress(text: string): string {
   return text.length > 220 ? `${text.slice(0, 220).trim()}...` : text;
 }
 
+function excerptAroundMatch(
+  text: string,
+  matcher: RegExp | string,
+  window = 110,
+  maxLen = 240
+): string {
+  const normalized = text.trim();
+  if (!normalized) return normalized;
+
+  const match =
+    typeof matcher === "string"
+      ? { index: normalized.toLowerCase().indexOf(matcher.toLowerCase()), 0: matcher }
+      : normalized.match(matcher);
+
+  const index =
+    typeof match?.index === "number" && match.index >= 0 ? match.index : -1;
+  const token = typeof match?.[0] === "string" ? match[0] : "";
+
+  if (index === -1 || !token) {
+    return normalized.length > maxLen ? `${normalized.slice(0, maxLen).trim()}...` : normalized;
+  }
+
+  const start = Math.max(0, index - window);
+  const end = Math.min(normalized.length, index + token.length + window);
+  let excerpt = normalized.slice(start, end).trim();
+
+  if (excerpt.length > maxLen) {
+    const overflow = excerpt.length - maxLen;
+    const trimLeft = Math.floor(overflow / 2);
+    const trimRight = overflow - trimLeft;
+    excerpt = excerpt.slice(trimLeft, excerpt.length - trimRight).trim();
+  }
+
+  return `${start > 0 ? "..." : ""}${excerpt}${end < normalized.length ? "..." : ""}`;
+}
+
 export function heuristicPolicyFlags(script: string): PolicyFlag[] {
   const lines = script.split("\n");
   const flags: PolicyFlag[] = [];
@@ -235,9 +271,10 @@ export function heuristicPolicyFlags(script: string): PolicyFlag[] {
       const key = `curse:${lineNumber}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      const excerpt = excerptAroundMatch(text, strongProfanityHits[0].regex);
       flags.push({
         line: lineNumber,
-        text,
+        text: excerpt,
         category: "monetization",
         severity: "medium",
         policyName: "Advertiser-Friendly Language",
@@ -256,9 +293,10 @@ export function heuristicPolicyFlags(script: string): PolicyFlag[] {
       const key = `trauma:${lineNumber}:${pattern.policyName}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      const excerpt = excerptAroundMatch(text, pattern.regex);
       flags.push({
         line: lineNumber,
-        text,
+        text: excerpt,
         category: "age_restriction",
         severity: pattern.severity,
         policyName: pattern.policyName,

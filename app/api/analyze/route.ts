@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { runPipeline } from "@/lib/pipeline/orchestrator";
 import { parseGoogleDocsUrl, fetchGoogleDocText } from "@/lib/google-docs/fetch";
 import { extractLatestVersion } from "@/lib/utils/extract-latest-version";
+import { normalizeScriptForAnalysis } from "@/lib/utils/normalize-script";
 import type { CaseMetadata, StageUpdate } from "@/lib/pipeline/types";
 import type { DocumentFacts } from "@/lib/documents/types";
 import type { VideoFrameFinding } from "@/lib/pipeline/types";
@@ -92,37 +93,6 @@ const VideoFindingsSchema = z.array(
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
-
-function normalizeScriptForAnalysis(input: string): string {
-  const normalizedNewlines = input.replace(/\r\n?/g, "\n");
-  const lines = normalizedNewlines.split("\n");
-  const out: string[] = [];
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      out.push("");
-      continue;
-    }
-
-    // Video transcripts can arrive as a single giant line. Split on sentence
-    // boundaries to preserve usable line-level references for downstream flags.
-    if (trimmed.length > 420) {
-      const chunks = trimmed
-        .split(/(?<=[.!?])\s+(?=[A-Z0-9"'])/g)
-        .map((s) => s.trim())
-        .filter(Boolean);
-      if (chunks.length > 1) {
-        out.push(...chunks);
-        continue;
-      }
-    }
-
-    out.push(trimmed);
-  }
-
-  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-}
 
 function extractVideoTranscript(input: string): string | undefined {
   const marker = "\n\n--- VIDEO TRANSCRIPT ---\n\n";

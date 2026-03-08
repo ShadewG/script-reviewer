@@ -677,8 +677,8 @@ export default function AnnotatedScriptView({
                   {edits.map((edit) => (
                     <div key={edit.lineNumber} className="text-[10px] border border-[var(--border)] p-1.5">
                       <div className="text-[var(--text-dim)] mb-1">Line {edit.lineNumber}</div>
-                      <div className="text-[var(--red)] line-through">{edit.originalText.slice(0, 60)}{edit.originalText.length > 60 ? "..." : ""}</div>
-                      <div className="text-[var(--green)]">{edit.newText.slice(0, 60)}{edit.newText.length > 60 ? "..." : ""}</div>
+                      <div className="text-[var(--red)]">Original: {edit.originalText.slice(0, 60)}{edit.originalText.length > 60 ? "..." : ""}</div>
+                      <div className="text-[var(--green)]">Suggested: {edit.newText.slice(0, 60)}{edit.newText.length > 60 ? "..." : ""}</div>
                     </div>
                   ))}
                 </div>
