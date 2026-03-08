@@ -3,6 +3,14 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import type { LegalFlag, PolicyFlag } from "@/lib/pipeline/types";
 
+interface LineEdit {
+  lineNumber: number;
+  originalText: string;
+  newText: string;
+  verdict: string;
+  timestamp: number;
+}
+
 interface LineEditFormProps {
   lineNumber: number;
   originalText: string;
@@ -11,6 +19,7 @@ interface LineEditFormProps {
   caseStatus: string;
   hasMinors: boolean;
   onClose: () => void;
+  onAcceptEdit?: (edit: LineEdit) => void;
 }
 
 function LineEditForm({
@@ -21,6 +30,7 @@ function LineEditForm({
   caseStatus,
   hasMinors,
   onClose,
+  onAcceptEdit,
 }: LineEditFormProps) {
   const [newText, setNewText] = useState(originalText);
   const [analyzing, setAnalyzing] = useState(false);
@@ -111,6 +121,17 @@ function LineEditForm({
                 </div>
               ))}
             </div>
+          )}
+          {newText !== originalText && onAcceptEdit && (
+            <button
+              onClick={() => {
+                onAcceptEdit({ lineNumber, originalText, newText, verdict: result.verdict, timestamp: Date.now() });
+                onClose();
+              }}
+              className="text-[10px] uppercase tracking-wider mt-2 px-3 py-1 border border-[var(--green)] text-[var(--green)] hover:bg-[var(--green)] hover:text-[var(--bg)]"
+            >
+              Accept Edit
+            </button>
           )}
         </div>
       )}
@@ -270,6 +291,8 @@ export default function AnnotatedScriptView({
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
   const [editingLine, setEditingLine] = useState<number | null>(null);
   const [currentFlagIndex, setCurrentFlagIndex] = useState(0);
+  const [edits, setEdits] = useState<LineEdit[]>([]);
+  const [showEdits, setShowEdits] = useState(false);
   const selectedRef = useRef<HTMLDivElement>(null);
   const scriptContainerRef = useRef<HTMLDivElement>(null);
   const [scrollRatio, setScrollRatio] = useState(0);
@@ -401,9 +424,11 @@ export default function AnnotatedScriptView({
             const hasLegal = flags?.some((f) => f.type === "legal");
             const hasPolicy = flags?.some((f) => f.type === "policy");
             const isSelected = selectedLine === lineNum;
+            const lineEdit = edits.find((e) => e.lineNumber === lineNum);
 
             let bgColor = "transparent";
-            if (hasLegal && hasPolicy) bgColor = "rgba(239, 68, 68, 0.2)";
+            if (lineEdit) bgColor = "rgba(34, 197, 94, 0.12)";
+            else if (hasLegal && hasPolicy) bgColor = "rgba(239, 68, 68, 0.2)";
             else if (hasLegal) bgColor = "rgba(239, 68, 68, 0.12)";
             else if (hasPolicy) bgColor = "rgba(234, 179, 8, 0.12)";
 
@@ -420,8 +445,9 @@ export default function AnnotatedScriptView({
                   {/* Line number gutter */}
                   <div className="w-10 flex-shrink-0 text-right pr-2 text-[var(--text-dim)] select-none border-r border-[var(--border)] relative">
                     {lineNum}
-                    {flags && (
+                    {(flags || lineEdit) && (
                       <div className="absolute right-[-3px] top-[9px] flex flex-col gap-0.5">
+                        {lineEdit && <div className="w-1.5 h-1.5 bg-[var(--green)]" />}
                         {hasLegal && <div className="w-1.5 h-1.5 bg-[var(--red)]" />}
                         {hasPolicy && <div className="w-1.5 h-1.5 bg-[var(--yellow)]" />}
                       </div>
@@ -515,6 +541,7 @@ export default function AnnotatedScriptView({
                       caseStatus={caseStatus}
                       hasMinors={hasMinors}
                       onClose={() => setEditingLine(null)}
+                      onAcceptEdit={(edit) => setEdits((prev) => [...prev.filter((e) => e.lineNumber !== edit.lineNumber), edit])}
                     />
                   </div>
                 )}
@@ -611,6 +638,10 @@ export default function AnnotatedScriptView({
               <span className="w-3 h-3 flex-shrink-0" style={{ background: "rgba(239, 68, 68, 0.2)" }} />
               <span>Both</span>
             </div>
+            <div className="flex items-center gap-2">
+              <span className="w-3 h-3 flex-shrink-0" style={{ background: "rgba(34, 197, 94, 0.12)" }} />
+              <span>Edited</span>
+            </div>
           </div>
           <div className="border-t border-[var(--border)] mt-3 pt-3 text-[10px] text-[var(--text-dim)]">
             <p className="mb-1">Click a highlighted line to see flag details.</p>
@@ -626,6 +657,43 @@ export default function AnnotatedScriptView({
               <div><kbd className="px-1 border border-[var(--border)] text-[9px]">Esc</kbd> — close / deselect</div>
             </div>
           </div>
+
+          {/* Session edits */}
+          {edits.length > 0 && (
+            <div className="border-t border-[var(--border)] mt-3 pt-3">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider">
+                  Edits ({edits.length})
+                </div>
+                <button
+                  onClick={() => setShowEdits(!showEdits)}
+                  className="text-[10px] text-[var(--text-dim)] hover:text-[var(--text)] uppercase"
+                >
+                  {showEdits ? "Hide" : "Show"}
+                </button>
+              </div>
+              {showEdits && (
+                <div className="space-y-2 max-h-48 overflow-y-auto">
+                  {edits.map((edit) => (
+                    <div key={edit.lineNumber} className="text-[10px] border border-[var(--border)] p-1.5">
+                      <div className="text-[var(--text-dim)] mb-1">Line {edit.lineNumber}</div>
+                      <div className="text-[var(--red)] line-through">{edit.originalText.slice(0, 60)}{edit.originalText.length > 60 ? "..." : ""}</div>
+                      <div className="text-[var(--green)]">{edit.newText.slice(0, 60)}{edit.newText.length > 60 ? "..." : ""}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button
+                onClick={() => {
+                  const text = edits.map((e) => `Line ${e.lineNumber}:\n- ${e.originalText}\n+ ${e.newText}`).join("\n\n");
+                  navigator.clipboard.writeText(text);
+                }}
+                className="text-[10px] uppercase tracking-wider mt-2 px-2 py-1 border border-[var(--border)] hover:bg-[var(--bg-elevated)] text-[var(--text-dim)] w-full text-center"
+              >
+                Copy All Edits
+              </button>
+            </div>
+          )}
 
           <div className="border-t border-[var(--border)] mt-3 pt-3">
             <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-2">Stats</div>
