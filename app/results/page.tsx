@@ -5,7 +5,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import type { SynthesisReport, LegalFlag, PolicyFlag } from "@/lib/pipeline/types";
 import type { DocumentFacts } from "@/lib/documents/types";
 import AnnotatedScriptView from "./components/AnnotatedScriptView";
-import type { VideoFrameFinding } from "@/lib/pipeline/types";
+import type { VideoFrameFinding, VideoFrameRisk } from "@/lib/pipeline/types";
 import { YT_POLICIES } from "@/lib/policies/youtube-policies";
 import { useTheme } from "@/lib/theme";
 import { useOnboarding, OnboardingOverlay } from "@/lib/onboarding";
@@ -51,6 +51,16 @@ function bestFlagExcerpt(flagTexts: string[], maxLen: number): string | null {
 
   if (candidates.length === 0) return null;
   return smartExcerpt(candidates[0], maxLen);
+}
+
+/* ── Role pluralization ── */
+function pluralRole(role: string, count: number): string {
+  if (count === 1) return role;
+  if (role === "family") return "family";
+  if (role === "witness") return "witnesses";
+  if (role === "attorney") return "attorneys";
+  if (role === "officer") return "officers";
+  return role + "s";
 }
 
 /* ── Severity utilities ── */
@@ -433,6 +443,77 @@ function normalizeRiskText(input: string): string {
     .trim();
 }
 
+function videoRiskFamilyKey(risk: VideoFrameRisk): string {
+  const joined = normalizeRiskText(
+    `${risk.policyName} ${risk.reasoning} ${risk.detectedText ?? ""}`
+  );
+
+  if (
+    risk.category === "privacy" &&
+    /\b(minor|child|daughter|son|grandchild|juvenile|face|portrait|unblurred)\b/.test(joined)
+  ) {
+    return "privacy:minor_identity";
+  }
+  if (
+    risk.category === "privacy" &&
+    /\b(personal overview|possible relatives|possible neighbors|possible neighbours|possible associates|possible address history|possible social media|possible usernames|possible owned properties|contact info|aliases|best match|people search|background report|data broker|dossier|doxxing)\b/.test(joined)
+  ) {
+    return "privacy:pii_dossier";
+  }
+  if (
+    risk.category === "privacy" &&
+    /\b(ip address|ipv4|ipv6|meta platforms|device identifier|device fingerprint|user agent|agent string|login|account activity)\b/.test(joined)
+  ) {
+    return "privacy:technical_record";
+  }
+  if (
+    risk.category === "privacy" &&
+    /\b(phone|email|address|street|license plate|plate number|contact|home|property)\b/.test(joined)
+  ) {
+    return "privacy:contact_or_address";
+  }
+  if (
+    risk.category === "privacy" &&
+    /\b(instagram|facebook|social media|followers|following|digital creator|profile photo|profile)\b/.test(joined)
+  ) {
+    return "privacy:social_profile";
+  }
+  if (/\b(casefile|communication doc|agency|phone field|in person|e mail|notes|report form)\b/.test(joined)) {
+    return `${risk.category}:casefile_document`;
+  }
+  if (/\b(graphic|corpse|body|blood|decomposition|remains|gore|injury|grave)\b/.test(joined)) {
+    return `${risk.category}:graphic_detail`;
+  }
+
+  return `${risk.category}:${normalizeRiskText(risk.policyName).slice(0, 40) || "unknown"}`;
+}
+
+function collapseVideoRisksForDisplay(risks: VideoFrameRisk[]): VideoFrameRisk[] {
+  const map = new Map<string, VideoFrameRisk>();
+
+  for (const risk of risks) {
+    const key = videoRiskFamilyKey(risk);
+    const existing = map.get(key);
+    if (!existing) {
+      map.set(key, risk);
+      continue;
+    }
+
+    const severityDelta = (SEV_ORDER[risk.severity] ?? 0) - (SEV_ORDER[existing.severity] ?? 0);
+    const detectedLength = (risk.detectedText ?? "").length - (existing.detectedText ?? "").length;
+    const reasoningLength = risk.reasoning.length - existing.reasoning.length;
+    if (severityDelta > 0 || (severityDelta === 0 && (detectedLength > 0 || reasoningLength > 0))) {
+      map.set(key, risk);
+    }
+  }
+
+  return [...map.values()].sort((a, b) => (SEV_ORDER[b.severity] ?? 0) - (SEV_ORDER[a.severity] ?? 0));
+}
+
+function rawMomentCount(entries: VideoFrameFinding[]): number {
+  return entries.reduce((sum, entry) => sum + Math.max(1, entry.selectionMeta?.incidentCount ?? 1), 0);
+}
+
 function toOverviewSignature(item: VideoFrameFinding): string {
   const risks = item.risks ?? [];
   const hasPrivacy = risks.some((r) => r.category === "privacy");
@@ -463,36 +544,41 @@ function toOverviewSignature(item: VideoFrameFinding): string {
 function groupOverviewVideoTimeline(entries: VideoFrameFinding[]): VideoTimelineGroup[] {
   const sorted = [...entries].sort((a, b) => a.second - b.second);
   const groups: VideoTimelineGroup[] = [];
-  const WINDOW = 180;
+  const WINDOW = entries.some((entry) => Boolean(entry.selectionMeta?.incidentSignature)) ? 60 : 180;
 
   for (const item of sorted) {
     const signature = toOverviewSignature(item);
-    const maxSev = item.risks.reduce(
+    const displayRisks = collapseVideoRisksForDisplay(item.risks ?? []);
+    const maxSev = displayRisks.reduce(
       (worst, r) => ((SEV_ORDER[r.severity] ?? 0) > (SEV_ORDER[worst] ?? 0) ? r.severity : worst),
       "low"
     );
+    const incidentStart = item.selectionMeta?.incidentStartSecond ?? item.second;
+    const incidentEnd = item.selectionMeta?.incidentEndSecond ?? item.second;
+    const incidentCount = Math.max(1, item.selectionMeta?.incidentCount ?? 1);
     const found = groups.find(
-      (g) => g.signature === signature && item.second - g.endSecond <= WINDOW
+      (g) => g.signature === signature && incidentStart - g.endSecond <= WINDOW
     );
 
     if (!found) {
       groups.push({
         item,
         signature,
-        startSecond: item.second,
-        endSecond: item.second,
-        startTimecode: item.timecode,
-        endTimecode: item.timecode,
-        count: 1,
+        startSecond: incidentStart,
+        endSecond: incidentEnd,
+        startTimecode: toTimecodeDisplay(incidentStart),
+        endTimecode: toTimecodeDisplay(incidentEnd),
+        count: incidentCount,
       });
       continue;
     }
 
-    found.endSecond = item.second;
-    found.endTimecode = item.timecode;
-    found.count += 1;
+    found.endSecond = Math.max(found.endSecond, incidentEnd);
+    found.endTimecode = toTimecodeDisplay(found.endSecond);
+    found.count += incidentCount;
 
-    const foundMax = found.item.risks.reduce(
+    const foundDisplayRisks = collapseVideoRisksForDisplay(found.item.risks ?? []);
+    const foundMax = foundDisplayRisks.reduce(
       (worst, r) => ((SEV_ORDER[r.severity] ?? 0) > (SEV_ORDER[worst] ?? 0) ? r.severity : worst),
       "low"
     );
@@ -502,11 +588,11 @@ function groupOverviewVideoTimeline(entries: VideoFrameFinding[]): VideoTimeline
   }
 
   return groups.sort((a, b) => {
-    const sevA = a.item.risks.reduce(
+    const sevA = collapseVideoRisksForDisplay(a.item.risks ?? []).reduce(
       (worst, r) => ((SEV_ORDER[r.severity] ?? 0) > (SEV_ORDER[worst] ?? 0) ? r.severity : worst),
       "low"
     );
-    const sevB = b.item.risks.reduce(
+    const sevB = collapseVideoRisksForDisplay(b.item.risks ?? []).reduce(
       (worst, r) => ((SEV_ORDER[r.severity] ?? 0) > (SEV_ORDER[worst] ?? 0) ? r.severity : worst),
       "low"
     );
@@ -522,7 +608,10 @@ function buildVideoTimeline(
 ): VideoFrameFinding[] {
   const fromReport = report?.videoTimeline?.filter((v) => v.risks?.length > 0) ?? [];
   if (fromReport.length > 0) {
-    return dedupeVideoTimeline(fromReport);
+    const alreadyClustered = fromReport.some(
+      (v) => (v.selectionMeta?.incidentCount ?? 0) > 0 || Boolean(v.selectionMeta?.incidentSignature)
+    );
+    return alreadyClustered ? fromReport : dedupeVideoTimeline(fromReport);
   }
 
   // Fallback for older reports: derive timeline events from policy flags containing [Video HH:MM:SS]
@@ -877,7 +966,10 @@ function ResultsContent() {
     activeTab === "legal" ? allLegalFlags.length - filteredLegalFlags.length :
     activeTab === "youtube" ? allPolicyFlags.length - filteredPolicyFlags.length :
     activeTab === "video" ? videoTimeline.length - filteredVideoTimeline.length : 0;
-  const showSeverityFilter = activeTab === "legal" || activeTab === "youtube" || activeTab === "video";
+  const showSeverityFilter =
+    (activeTab === "legal" && allLegalFlags.length > 0) ||
+    (activeTab === "youtube" && allPolicyFlags.length > 0) ||
+    (activeTab === "video" && videoTimeline.length > 0);
 
   /* Video expand/collapse helpers — clear when filter changes */
   useEffect(() => {
@@ -1596,10 +1688,11 @@ function ResultsContent() {
                     <div className="space-y-1.5">
                       {overviewVideoTimeline.map((group, i) => {
                         const item = group.item;
-                        const maxSev = item.risks.reduce((worst, r) =>
+                        const displayRisks = collapseVideoRisksForDisplay(item.risks ?? []);
+                        const maxSev = displayRisks.reduce((worst, r) =>
                           (SEV_ORDER[r.severity] ?? 0) > (SEV_ORDER[worst] ?? 0) ? r.severity : worst,
                         "low");
-                        const categories = [...new Set(item.risks.map(r => r.category.replaceAll("_", " ")))];
+                        const categories = [...new Set(displayRisks.map(r => r.category.replaceAll("_", " ")))];
                         return (
                           <details
                             key={`${item.timecode}-${i}`}
@@ -1627,7 +1720,7 @@ function ResultsContent() {
                                 />
                               )}
                               <div className="space-y-2">
-                                {item.risks.map((risk, j) => (
+                                {displayRisks.map((risk, j) => (
                                   <div key={j} className="border border-[var(--border)] bg-[var(--bg)] p-2">
                                     <div className="flex items-center gap-2 mb-1 flex-wrap">
                                       <span className="text-[10px] uppercase font-semibold" style={{ color: sevColor(risk.severity) }}>
@@ -1900,7 +1993,7 @@ function ResultsContent() {
                 {grouped.map(g => (
                   <div key={g.role} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3 text-center">
                     <div className="text-lg tabular-nums" style={{ color: roleColors[g.role] ?? "var(--text)" }}>{g.entities.length}</div>
-                    <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)]">{g.role}{g.entities.length !== 1 ? "s" : ""}</div>
+                    <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)]">{pluralRole(g.role, g.entities.length)}</div>
                   </div>
                 ))}
               </div>
@@ -1910,7 +2003,7 @@ function ResultsContent() {
                 <div key={g.role}>
                   <h3 className="text-xs uppercase tracking-wider mb-3 flex items-center gap-2" style={{ color: roleColors[g.role] }}>
                     <span className="w-2 h-2" style={{ background: roleColors[g.role] }} />
-                    {g.role}s ({g.entities.length})
+                    {pluralRole(g.role, g.entities.length)} ({g.entities.length})
                   </h3>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {g.entities.map((entity: ParsedEntity, i: number) => {
@@ -2044,13 +2137,18 @@ function ResultsContent() {
         {activeTab === "video" && (() => {
           // Compute evaluation stats from all findings
           const allFindings = filteredVideoTimeline;
-          const totalRisks = allFindings.reduce((sum, f) => sum + f.risks.length, 0);
+          const rawMoments = rawMomentCount(allFindings);
+          const totalRisks = allFindings.reduce(
+            (sum, f) => sum + collapseVideoRisksForDisplay(f.risks ?? []).length,
+            0
+          );
           const sevDist = { low: 0, medium: 0, high: 0, severe: 0 };
           const reasonDist = new Map<string, number>();
           const sceneIds = new Set<number>();
           let withMeta = 0;
           for (const f of allFindings) {
-            for (const r of f.risks) {
+            const displayRisks = collapseVideoRisksForDisplay(f.risks ?? []);
+            for (const r of displayRisks) {
               sevDist[r.severity as keyof typeof sevDist] = (sevDist[r.severity as keyof typeof sevDist] ?? 0) + 1;
             }
             const meta = f.selectionMeta;
@@ -2090,15 +2188,15 @@ function ResultsContent() {
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
                     <div className="bg-[var(--bg)] border border-[var(--border)] p-3">
                       <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Raw Moments</div>
-                      <div className="text-xl font-bold text-[var(--text-bright)] tabular-nums">{filteredVideoTimeline.length}</div>
+                      <div className="text-xl font-bold text-[var(--text-bright)] tabular-nums">{rawMoments}</div>
                     </div>
                     <div className="bg-[var(--bg)] border border-[var(--border)] p-3">
                       <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1">Grouped Incidents</div>
                       <div className="flex items-baseline gap-2">
                         <span className="text-xl font-bold text-[var(--text-bright)] tabular-nums">{groupedVideoTimeline.length}</span>
-                        {filteredVideoTimeline.length > groupedVideoTimeline.length && (
+                        {rawMoments > groupedVideoTimeline.length && (
                           <span className="text-[10px] text-[var(--green)]">
-                            {Math.round((1 - groupedVideoTimeline.length / filteredVideoTimeline.length) * 100)}% deduped
+                            {Math.round((1 - groupedVideoTimeline.length / rawMoments) * 100)}% deduped
                           </span>
                         )}
                       </div>
@@ -2184,13 +2282,14 @@ function ResultsContent() {
                   {/* Table rows */}
                   {groupedVideoTimeline.map((group, i) => {
                     const item = group.item;
-                    const maxSev = item.risks.reduce((worst, r) =>
+                    const displayRisks = collapseVideoRisksForDisplay(item.risks ?? []);
+                    const maxSev = displayRisks.reduce((worst, r) =>
                       (SEV_ORDER[r.severity] ?? 0) > (SEV_ORDER[worst] ?? 0) ? r.severity : worst,
                     "low");
                     const isExpanded = expandedVideoSet.has(i);
-                    const categories = [...new Set(item.risks.map(r => r.category.replaceAll("_", " ")))];
+                    const categories = [...new Set(displayRisks.map(r => r.category.replaceAll("_", " ")))];
                     const rangeLabel =
-                      group.count > 1 ? `${group.startTimecode}-${group.endTimecode}` : item.timecode;
+                      group.startSecond === group.endSecond ? group.startTimecode : `${group.startTimecode}-${group.endTimecode}`;
                     const meta = item.selectionMeta;
 
                     return (
@@ -2209,7 +2308,7 @@ function ResultsContent() {
                             {categories.join(", ")}
                           </span>
                           <span className="text-sm text-[var(--text-dim)] text-right self-center">
-                            {item.risks.length}
+                            {displayRisks.length}
                           </span>
                           <span className="text-sm text-[var(--text-dim)] text-right self-center">
                             {group.count}
@@ -2220,8 +2319,8 @@ function ResultsContent() {
                           <div className="px-4 pb-4 pt-3 border-t border-[var(--border)] bg-[var(--bg-elevated)]">
                             <div className="text-xs text-[var(--text-dim)] mb-3">
                               {group.count > 1
-                                ? `${group.count} nearby flagged moments collapsed into one incident from ${group.startTimecode} to ${group.endTimecode}.`
-                                : `Single flagged moment at ${item.timecode}.`}
+                                ? `${group.count} raw flagged moments collapsed into one incident spanning ${group.startTimecode} to ${group.endTimecode}.`
+                                : `Single flagged moment at ${group.startTimecode}.`}
                             </div>
 
                             {/* Frame Selection Diagnostics */}
@@ -2286,7 +2385,7 @@ function ResultsContent() {
                               />
                             )}
                             <div className="space-y-2">
-                              {item.risks.map((risk, j) => (
+                              {displayRisks.map((risk, j) => (
                                 <div key={j} className="border border-[var(--border)] bg-[var(--bg)] p-3">
                                   <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                                     <span
