@@ -93,6 +93,28 @@ function LoadingSkeleton() {
   );
 }
 
+interface FactCheckFinding {
+  line?: number;
+  claim: string;
+  verdict: "supported" | "contradicted" | "unclear" | "needs_external_verification";
+  confidence: number;
+  basis: "documents" | "research" | "external";
+  evidence: string;
+  suggestedRewrite?: string;
+}
+
+interface StageLogEntry {
+  id: string;
+  stage: string;
+  model: string | null;
+  status: string;
+  durationMs: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheHit: boolean;
+  createdAt: string;
+}
+
 interface ReviewData {
   id: string;
   createdAt: string;
@@ -113,6 +135,8 @@ interface ReviewData {
   youtubeFlags: PolicyFlag[] | null;
   parsedEntities: Record<string, unknown> | null;
   researchData: Record<string, unknown> | null;
+  factCheckData: { summary: string; findings: FactCheckFinding[] } | null;
+  analysisWarnings: string[] | null;
   status: string;
   error: string | null;
 }
@@ -570,7 +594,7 @@ function renderWithGlossary(text: string): React.ReactNode {
   return parts;
 }
 
-type TabKey = "overview" | "video" | "script" | "legal" | "youtube" | "research" | "raw";
+type TabKey = "overview" | "video" | "script" | "legal" | "youtube" | "research" | "diagnostics" | "raw";
 
 function ResultsContent() {
   const searchParams = useSearchParams();
@@ -591,6 +615,7 @@ function ResultsContent() {
   const [showDisclaimers, setShowDisclaimers] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [resumeStages, setResumeStages] = useState<Array<{ stage: number; name: string; status: string; error?: string }>>([]);
+  const [stageLogs, setStageLogs] = useState<StageLogEntry[]>([]);;
   const { theme, toggle: toggleTheme } = useTheme();
   const onboarding = useOnboarding("results");
 
@@ -603,6 +628,10 @@ function ResultsContent() {
       })
       .then((d) => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
+    fetch(`/api/reviews/${id}/logs`)
+      .then((r) => r.ok ? r.json() : [])
+      .then((logs) => setStageLogs(logs))
+      .catch(() => {});
   }, [id]);
 
   const handleResume = useCallback(async () => {
@@ -956,6 +985,19 @@ function ResultsContent() {
         </div>
       )}
 
+      {/* Warnings Banner */}
+      {data.analysisWarnings && data.analysisWarnings.length > 0 && (
+        <div className="border border-[var(--yellow)] p-3 mb-4 flex items-start gap-3 cursor-pointer hover:bg-[var(--bg-surface)]" onClick={() => setActiveTab("diagnostics")} data-no-print>
+          <div className="w-2 h-2 bg-[var(--yellow)] mt-1 flex-shrink-0" />
+          <div>
+            <span className="text-[10px] uppercase tracking-wider text-[var(--yellow)]">
+              {data.analysisWarnings.length} pipeline warning{data.analysisWarnings.length > 1 ? "s" : ""}
+            </span>
+            <p className="text-[10px] text-[var(--text-dim)] mt-0.5">{data.analysisWarnings[0]}</p>
+          </div>
+        </div>
+      )}
+
       {/* Verdict Banner */}
       {report && (
         <div
@@ -1045,7 +1087,7 @@ function ResultsContent() {
       {/* Tabs + Severity Filter — sticky container */}
       <div className="sticky top-0 z-20 bg-[var(--bg)]" data-no-print>
       <div data-tour="tabs" className="flex gap-0 border-b border-[var(--border)] mb-0 overflow-x-auto">
-        {(["overview", "video", "script", "legal", "youtube", "research", "raw"] as const).map((tab) => {
+        {(["overview", "video", "script", "legal", "youtube", "research", "diagnostics", "raw"] as const).map((tab) => {
           const count = tabCounts[tab];
           return (
             <button
@@ -1994,6 +2036,147 @@ function ResultsContent() {
             ) : (
               <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-8 text-center">
                 <p className="text-xs text-[var(--text-dim)]">No research data available.</p>
+              </div>
+            )}
+
+            {/* Fact-Check Findings */}
+            {data.factCheckData && Array.isArray(data.factCheckData.findings) && data.factCheckData.findings.length > 0 && (
+              <div className="mt-6">
+                <h3 className="text-xs uppercase tracking-wider text-[var(--text-dim)] mb-3 border-b border-[var(--border)] pb-2">
+                  Fact-Check ({data.factCheckData.findings.length} claims)
+                </h3>
+                {data.factCheckData.summary && (
+                  <p className="text-xs text-[var(--text-dim)] mb-3 italic">{data.factCheckData.summary}</p>
+                )}
+                <div className="space-y-2">
+                  {data.factCheckData.findings.map((f: FactCheckFinding, i: number) => {
+                    const verdictColors: Record<string, string> = {
+                      supported: "var(--green)",
+                      contradicted: "var(--red)",
+                      unclear: "var(--yellow)",
+                      needs_external_verification: "var(--text-dim)",
+                    };
+                    const color = verdictColors[f.verdict] ?? "var(--text-dim)";
+                    return (
+                      <div key={i} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
+                          <span className="w-2 h-2" style={{ background: color }} />
+                          <span className="text-[10px] uppercase tracking-wider" style={{ color }}>
+                            {f.verdict.replace(/_/g, " ")}
+                          </span>
+                          <span className="text-[10px] text-[var(--text-dim)]">
+                            confidence: {Math.round(f.confidence * 100)}%
+                          </span>
+                          <span className="text-[10px] text-[var(--text-dim)] border border-[var(--border)] px-1">
+                            {f.basis}
+                          </span>
+                          {f.line && (
+                            <span className="text-[10px] text-[var(--text-dim)]">line {f.line}</span>
+                          )}
+                        </div>
+                        <p className="text-xs text-[var(--text)]">{f.claim}</p>
+                        <p className="text-[10px] text-[var(--text-dim)] mt-1">{f.evidence}</p>
+                        {f.suggestedRewrite && (
+                          <p className="text-[10px] text-[var(--green)] mt-1">Rewrite: {f.suggestedRewrite}</p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Diagnostics Tab */}
+        {activeTab === "diagnostics" && (
+          <div className="space-y-4">
+            {/* Analysis Warnings */}
+            {data.analysisWarnings && data.analysisWarnings.length > 0 && (
+              <div className="border border-[var(--yellow)] bg-[var(--bg-surface)] p-3">
+                <div className="text-[10px] uppercase tracking-wider text-[var(--yellow)] mb-2">
+                  Pipeline Warnings ({data.analysisWarnings.length})
+                </div>
+                <div className="space-y-1">
+                  {data.analysisWarnings.map((w: string, i: number) => (
+                    <p key={i} className="text-xs text-[var(--text-dim)]">{w}</p>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Stage Performance */}
+            {stageLogs.length > 0 ? (
+              <div>
+                <h3 className="text-xs uppercase tracking-wider text-[var(--text-dim)] mb-3 border-b border-[var(--border)] pb-2">
+                  Stage Performance
+                </h3>
+                <div className="space-y-2">
+                  {stageLogs.map((log) => {
+                    const totalTokens = (log.inputTokens ?? 0) + (log.outputTokens ?? 0);
+                    return (
+                      <div key={log.id} className="border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+                        <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="w-2 h-2" style={{
+                              background: log.status === "complete" ? "var(--green)" :
+                                         log.status === "error" ? "var(--red)" : "var(--yellow)"
+                            }} />
+                            <span className="text-xs uppercase tracking-wider text-[var(--text-bright)]">
+                              {log.stage}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-3 text-[10px] text-[var(--text-dim)]">
+                            {log.model && <span>{log.model}</span>}
+                            {log.cacheHit && (
+                              <span className="text-[var(--green)] border border-[var(--green)] px-1">CACHED</span>
+                            )}
+                            <span className="uppercase" style={{
+                              color: log.status === "complete" ? "var(--green)" :
+                                     log.status === "error" ? "var(--red)" : "var(--yellow)"
+                            }}>{log.status}</span>
+                          </div>
+                        </div>
+                        <div className="flex gap-4 text-[10px] text-[var(--text-dim)] mt-1">
+                          {log.durationMs != null && (
+                            <span>{(log.durationMs / 1000).toFixed(1)}s</span>
+                          )}
+                          {totalTokens > 0 && (
+                            <span>{totalTokens.toLocaleString()} tokens ({(log.inputTokens ?? 0).toLocaleString()} in / {(log.outputTokens ?? 0).toLocaleString()} out)</span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Totals */}
+                <div className="border-t border-[var(--border)] mt-4 pt-3">
+                  <div className="grid grid-cols-3 gap-4 text-center">
+                    <div>
+                      <div className="text-lg text-[var(--text-bright)] tabular-nums">
+                        {(stageLogs.reduce((sum, l) => sum + (l.durationMs ?? 0), 0) / 1000).toFixed(1)}s
+                      </div>
+                      <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider">Total Time</div>
+                    </div>
+                    <div>
+                      <div className="text-lg text-[var(--text-bright)] tabular-nums">
+                        {stageLogs.reduce((sum, l) => sum + (l.inputTokens ?? 0) + (l.outputTokens ?? 0), 0).toLocaleString()}
+                      </div>
+                      <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider">Total Tokens</div>
+                    </div>
+                    <div>
+                      <div className="text-lg text-[var(--text-bright)] tabular-nums">
+                        {stageLogs.filter((l) => l.cacheHit).length}/{stageLogs.length}
+                      </div>
+                      <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider">Cache Hits</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-8 text-center">
+                <p className="text-xs text-[var(--text-dim)]">No stage logs available.</p>
               </div>
             )}
           </div>

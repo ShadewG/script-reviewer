@@ -11,7 +11,7 @@
 - [ ] **DMCA / music licensing analysis** — Writers constantly get hit by audio claims. New stage or sub-stage in YouTube Policy that flags background music, clips, and sound effects
 
 ### Medium Priority
-- [ ] **Stage-level performance logging** — Track duration + token count per stage per review. Store in a `stage_logs` table: `reviewId, stage, model, durationMs, inputTokens, outputTokens, status`
+- [x] **Stage-level performance logging** — `StageLog` table + `/api/reviews/[id]/logs` endpoint + Diagnostics tab with timings, tokens, cache hits, totals
 - [ ] **Raise research query limit** — Currently capped at 5 queries. For complex multi-suspect cases this misses context. Make dynamic: 3-8 based on entity count
 - [ ] **CourtListener integration improvements** — Currently optional and barely used. Make it a first-class citizen: auto-search by defendant name + state, show docket links in research tab
 - [ ] **Prompt versioning** — Track which prompt version produced which results. Store prompt hash per stage on the review. Enables A/B testing prompt changes
