@@ -326,6 +326,22 @@ function safeJsonParse<T>(text: string): T {
   }
 }
 
+async function parseSynthesisResponse(text: string): Promise<SynthesisReport> {
+  try {
+    return safeJsonParse<SynthesisReport>(text);
+  } catch (parseErr) {
+    const repaired = await callGPTMini(
+      SYNTHESIS_REPAIR_SYSTEM,
+      `Repair this malformed JSON so it parses strictly:\n\n${text}`
+    );
+    try {
+      return safeJsonParse<SynthesisReport>(repaired);
+    } catch {
+      throw parseErr;
+    }
+  }
+}
+
 export type OnProgress = (update: StageUpdate) => void;
 
 export async function runPipeline(
@@ -552,23 +568,30 @@ export async function runPipeline(
   emit({ stage: 4, name: "Synthesis", status: "running" });
   let report: SynthesisReport;
   try {
-    const synthResult = await callClaude(
-      SYNTHESIS_SYSTEM,
-      buildSynthesisPrompt(script, parsed, legalFlags, policyFlags, research, metadata)
+    const synthesisPrompt = buildSynthesisPrompt(
+      script,
+      parsed,
+      legalFlags,
+      policyFlags,
+      research,
+      metadata
     );
     try {
-      report = safeJsonParse<SynthesisReport>(synthResult);
-    } catch (parseErr) {
-      // Second chance: repair malformed JSON via lightweight model before failing stage.
-      const repaired = await callGPTMini(
-        SYNTHESIS_REPAIR_SYSTEM,
-        `Repair this malformed JSON so it parses strictly:\n\n${synthResult}`
-      );
-      try {
-        report = safeJsonParse<SynthesisReport>(repaired);
-      } catch {
-        throw parseErr;
-      }
+      const synthResult = await callClaude(SYNTHESIS_SYSTEM, synthesisPrompt);
+      report = await parseSynthesisResponse(synthResult);
+    } catch (claudeErr) {
+      const fallbackResult = await callGPT(SYNTHESIS_SYSTEM, synthesisPrompt);
+      report = await parseSynthesisResponse(fallbackResult);
+      emit({
+        stage: 4,
+        name: "Synthesis",
+        status: "running",
+        data: {
+          fallbackModel: "gpt",
+          reason:
+            claudeErr instanceof Error ? claudeErr.message : String(claudeErr),
+        },
+      });
     }
     // Inject the actual flags (prompt told Claude to return empty arrays to save tokens)
     report.legalFlags = legalFlags;

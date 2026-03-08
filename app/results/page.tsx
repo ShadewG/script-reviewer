@@ -333,7 +333,7 @@ function dedupeVideoTimeline(entries: VideoFrameFinding[]): VideoFrameFinding[] 
   return deduped;
 }
 
-type OverviewVideoGroup = {
+type VideoTimelineGroup = {
   item: VideoFrameFinding;
   signature: string;
   startSecond: number;
@@ -381,9 +381,9 @@ function toOverviewSignature(item: VideoFrameFinding): string {
   return `${dominant.category}:${normalizeRiskText(dominant.policyName).slice(0, 40)}`;
 }
 
-function groupOverviewVideoTimeline(entries: VideoFrameFinding[]): OverviewVideoGroup[] {
+function groupOverviewVideoTimeline(entries: VideoFrameFinding[]): VideoTimelineGroup[] {
   const sorted = [...entries].sort((a, b) => a.second - b.second);
-  const groups: OverviewVideoGroup[] = [];
+  const groups: VideoTimelineGroup[] = [];
   const WINDOW = 180;
 
   for (const item of sorted) {
@@ -608,10 +608,13 @@ function ResultsContent() {
     }),
     [videoTimeline, minSeverity],
   );
-  const overviewVideoTimeline = useMemo(
-    () =>
-      groupOverviewVideoTimeline(filteredVideoTimeline).slice(0, 12),
+  const groupedVideoTimeline = useMemo(
+    () => groupOverviewVideoTimeline(filteredVideoTimeline),
     [filteredVideoTimeline]
+  );
+  const overviewVideoTimeline = useMemo(
+    () => groupedVideoTimeline.slice(0, 12),
+    [groupedVideoTimeline]
   );
   const overviewCriticalEdits = useMemo(
     () => dedupeEditsForDisplay(report?.criticalEdits ?? []),
@@ -648,11 +651,11 @@ function ResultsContent() {
 
   /* Tab badge counts */
   const tabCounts: Partial<Record<TabKey, number>> = useMemo(() => ({
-    video: filteredVideoTimeline.length,
+    video: groupedVideoTimeline.length,
     legal: filteredLegalFlags.length,
     youtube: filteredPolicyFlags.length,
     script: allLegalFlags.length + allPolicyFlags.length,
-  }), [filteredVideoTimeline.length, filteredLegalFlags.length, filteredPolicyFlags.length, allLegalFlags.length, allPolicyFlags.length]);
+  }), [groupedVideoTimeline.length, filteredLegalFlags.length, filteredPolicyFlags.length, allLegalFlags.length, allPolicyFlags.length]);
 
   /* Severity filter helpers */
   const hiddenCount =
@@ -664,7 +667,7 @@ function ResultsContent() {
   /* Video expand/collapse helpers — clear when filter changes */
   useEffect(() => {
     setExpandedVideoSet(new Set());
-  }, [minSeverity]);
+  }, [minSeverity, groupedVideoTimeline.length]);
 
   const toggleVideoExpand = useCallback((idx: number) => {
     setExpandedVideoSet((prev) => {
@@ -674,8 +677,8 @@ function ResultsContent() {
     });
   }, []);
   const expandAllVideo = useCallback(() => {
-    setExpandedVideoSet(new Set(filteredVideoTimeline.map((_, i) => i)));
-  }, [filteredVideoTimeline]);
+    setExpandedVideoSet(new Set(groupedVideoTimeline.map((_, i) => i)));
+  }, [groupedVideoTimeline]);
   const collapseAllVideo = useCallback(() => {
     setExpandedVideoSet(new Set());
   }, []);
@@ -1182,7 +1185,7 @@ function ResultsContent() {
 
         {activeTab === "video" && (
           <div>
-            {filteredVideoTimeline.length === 0 ? (
+            {groupedVideoTimeline.length === 0 ? (
               <div className="border border-[var(--border)] bg-[var(--bg-surface)] p-8 text-center">
                 <p className="text-sm text-[var(--text-dim)]">
                   {videoTimeline.length === 0
@@ -1194,10 +1197,10 @@ function ResultsContent() {
               <>
                 <div className="flex items-center gap-3 mb-4">
                   <span className="text-sm text-[var(--text-bright)]">
-                    {filteredVideoTimeline.length} flagged moment{filteredVideoTimeline.length === 1 ? "" : "s"}
+                    {groupedVideoTimeline.length} grouped incident{groupedVideoTimeline.length === 1 ? "" : "s"}
                   </span>
                   <span className="text-xs text-[var(--text-dim)]">
-                    {filteredVideoTimeline.reduce((sum, v) => sum + v.risks.length, 0)} total risks
+                    {filteredVideoTimeline.length} raw moment{filteredVideoTimeline.length === 1 ? "" : "s"} collapsed
                   </span>
                   <div className="ml-auto flex gap-2">
                     <button
@@ -1217,30 +1220,34 @@ function ResultsContent() {
 
                 <div className="border border-[var(--border)] bg-[var(--bg-surface)] overflow-hidden">
                   {/* Table header */}
-                  <div className="grid grid-cols-[90px_80px_1fr_60px] gap-3 px-4 py-2.5 border-b border-[var(--border)] text-xs text-[var(--text-dim)] uppercase tracking-wider bg-[var(--bg)]">
-                    <span>Time</span>
+                  <div className="grid grid-cols-[140px_80px_1fr_60px_72px] gap-3 px-4 py-2.5 border-b border-[var(--border)] text-xs text-[var(--text-dim)] uppercase tracking-wider bg-[var(--bg)]">
+                    <span>Range</span>
                     <span>Severity</span>
                     <span>Categories</span>
                     <span className="text-right">Risks</span>
+                    <span className="text-right">Moments</span>
                   </div>
 
                   {/* Table rows */}
-                  {filteredVideoTimeline.map((item, i) => {
+                  {groupedVideoTimeline.map((group, i) => {
+                    const item = group.item;
                     const maxSev = item.risks.reduce((worst, r) =>
                       (SEV_ORDER[r.severity] ?? 0) > (SEV_ORDER[worst] ?? 0) ? r.severity : worst,
                     "low");
                     const isExpanded = expandedVideoSet.has(i);
                     const categories = [...new Set(item.risks.map(r => r.category.replaceAll("_", " ")))];
+                    const rangeLabel =
+                      group.count > 1 ? `${group.startTimecode}-${group.endTimecode}` : item.timecode;
 
                     return (
-                      <div key={`${item.timecode}-${i}`}>
+                      <div key={`${group.signature}-${group.startTimecode}-${group.endTimecode}-${i}`}>
                         <div
                           onClick={() => toggleVideoExpand(i)}
-                          className={`grid grid-cols-[90px_80px_1fr_60px] gap-3 px-4 py-3 cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors ${
+                          className={`grid grid-cols-[140px_80px_1fr_60px_72px] gap-3 px-4 py-3 cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors ${
                             isExpanded ? "bg-[var(--bg-elevated)]" : ""
                           } ${i > 0 ? "border-t border-[var(--border)]" : ""}`}
                         >
-                          <span className="text-sm font-mono text-[var(--amber)]">{item.timecode}</span>
+                          <span className="text-sm font-mono text-[var(--amber)]">{rangeLabel}</span>
                           <span className="text-xs uppercase self-center" style={{ color: sevColor(maxSev) }}>
                             {maxSev}
                           </span>
@@ -1250,10 +1257,18 @@ function ResultsContent() {
                           <span className="text-sm text-[var(--text-dim)] text-right self-center">
                             {item.risks.length}
                           </span>
+                          <span className="text-sm text-[var(--text-dim)] text-right self-center">
+                            {group.count}
+                          </span>
                         </div>
 
                         {isExpanded && (
                           <div className="px-4 pb-4 pt-3 border-t border-[var(--border)] bg-[var(--bg-elevated)]">
+                            <div className="text-xs text-[var(--text-dim)] mb-3">
+                              {group.count > 1
+                                ? `${group.count} nearby flagged moments collapsed into one incident from ${group.startTimecode} to ${group.endTimecode}.`
+                                : `Single flagged moment at ${item.timecode}.`}
+                            </div>
                             {item.thumbnailDataUrl && (
                               <img
                                 src={item.thumbnailDataUrl}
