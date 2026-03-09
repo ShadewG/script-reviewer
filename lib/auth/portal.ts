@@ -1,4 +1,5 @@
 import { jwtVerify, SignJWT, type JWTPayload } from "jose";
+import type { NextRequest } from "next/server";
 
 export const SCRIPT_REVIEWER_APP_ID = "script-reviewer";
 export const PORTAL_SESSION_COOKIE = "script_shield_portal_session";
@@ -47,6 +48,17 @@ function normalizeNextPath(nextPath?: string | null) {
   if (!nextPath.startsWith("/")) return "/";
   if (nextPath.startsWith("//")) return "/";
   return nextPath;
+}
+
+function getRequestOrigin(req: NextRequest) {
+  const forwardedProto = req.headers.get("x-forwarded-proto");
+  const forwardedHost = req.headers.get("x-forwarded-host");
+
+  if (forwardedProto && forwardedHost) {
+    return `${forwardedProto}://${forwardedHost}`;
+  }
+
+  return req.nextUrl.origin;
 }
 
 function coercePortalPayload(payload: PortalTokenPayload): Omit<PortalSession, "kind"> {
@@ -115,11 +127,14 @@ export async function readPortalSession(cookieValue?: string | null): Promise<Po
   }
 }
 
-export function buildPortalRedirectUrl(source: URL, nextPath?: string | null) {
+export function buildPortalRedirectUrl(req: NextRequest, nextPath?: string | null) {
   const redirectUrl = new URL("/api/auth/redirect", getPortalBaseUrl());
   redirectUrl.searchParams.set("app", SCRIPT_REVIEWER_APP_ID);
-  redirectUrl.searchParams.set("returnTo", source.origin);
-  redirectUrl.searchParams.set("next", normalizeNextPath(nextPath ?? `${source.pathname}${source.search}`));
+  redirectUrl.searchParams.set("returnTo", getRequestOrigin(req));
+  redirectUrl.searchParams.set(
+    "next",
+    normalizeNextPath(nextPath ?? `${req.nextUrl.pathname}${req.nextUrl.search}`)
+  );
   return redirectUrl;
 }
 

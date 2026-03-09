@@ -26,7 +26,7 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  const redirectUrl = buildPortalRedirectUrl(req.nextUrl);
+  const redirectUrl = buildPortalRedirectUrl(req);
 
   if (pathname.startsWith("/api/")) {
     return NextResponse.json(
