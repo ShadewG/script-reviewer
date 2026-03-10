@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useTheme } from "@/lib/theme";
 import { PORTAL_BASE_URL } from "@/lib/portal-url";
@@ -38,6 +38,29 @@ export default function ReviewsPage() {
   const [error, setError] = useState<string | null>(null);
   const [verdictFilter, setVerdictFilter] = useState<string>("all");
   const [stateFilter, setStateFilter] = useState<string>("all");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const editRef = useRef<HTMLInputElement>(null);
+
+  const saveTitle = useCallback(async (id: string, title: string) => {
+    setEditingId(null);
+    const trimmed = title.trim();
+    setReviews((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, scriptTitle: trimmed || null } : r))
+    );
+    await fetch(`/api/reviews/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scriptTitle: trimmed }),
+    });
+  }, []);
+
+  useEffect(() => {
+    if (editingId && editRef.current) {
+      editRef.current.focus();
+      editRef.current.select();
+    }
+  }, [editingId]);
 
   useEffect(() => {
     fetch("/api/reviews")
@@ -171,15 +194,42 @@ export default function ReviewsPage() {
 
           {filtered.map((review) => {
             const badge = statusBadge(review.status);
+            const isEditing = editingId === review.id;
             return (
               <div
                 key={review.id}
-                onClick={() => router.push(`/results?id=${review.id}`)}
+                onClick={() => {
+                  if (!isEditing) router.push(`/results?id=${review.id}`);
+                }}
                 className="grid grid-cols-[1fr_120px_100px_80px_80px_60px] gap-3 px-4 py-3 border-t border-[var(--border)] cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors"
               >
-                <span className="text-sm text-[var(--text)] truncate">
-                  {review.scriptTitle || "Untitled"}
-                </span>
+                {isEditing ? (
+                  <input
+                    ref={editRef}
+                    value={editValue}
+                    onChange={(e) => setEditValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") saveTitle(review.id, editValue);
+                      if (e.key === "Escape") setEditingId(null);
+                    }}
+                    onBlur={() => saveTitle(review.id, editValue)}
+                    onClick={(e) => e.stopPropagation()}
+                    maxLength={200}
+                    className="text-sm bg-[var(--bg)] text-[var(--text-bright)] border border-[var(--accent)] px-2 py-0.5 outline-none w-full"
+                  />
+                ) : (
+                  <span
+                    className="text-sm text-[var(--text)] truncate"
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      setEditingId(review.id);
+                      setEditValue(review.scriptTitle || "");
+                    }}
+                    title="Double-click to rename"
+                  >
+                    {review.scriptTitle || "Untitled"}
+                  </span>
+                )}
                 <span className="text-xs text-[var(--text-dim)] self-center">
                   {new Date(review.createdAt).toLocaleDateString()}
                 </span>
