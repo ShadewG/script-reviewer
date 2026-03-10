@@ -6,6 +6,7 @@ import type { DocumentFacts } from "@/lib/documents/types";
 import type { VideoFrameFinding } from "@/lib/pipeline/types";
 import { useTheme } from "@/lib/theme";
 import { useOnboarding, OnboardingOverlay } from "@/lib/onboarding";
+import { PORTAL_BASE_URL } from "@/lib/portal-url";
 
 const US_STATES = [
   "Alabama","Alaska","Arizona","Arkansas","California","Colorado","Connecticut",
@@ -450,6 +451,12 @@ export default function Home() {
           </p>
         </div>
         <div className="flex gap-2" data-no-print>
+          <a
+            href={PORTAL_BASE_URL}
+            className="text-xs uppercase tracking-wider border border-[var(--border)] px-4 py-2 hover:bg-[var(--bg-elevated)]"
+          >
+            Portal
+          </a>
           <button
             onClick={() => router.push("/reviews")}
             className="text-xs uppercase tracking-wider border border-[var(--border)] px-4 py-2 hover:bg-[var(--bg-elevated)]"

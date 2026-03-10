@@ -14,6 +14,7 @@ import { useKeyboardNav, KeyboardHelpOverlay } from "@/lib/keyboard-nav";
 import { generateDisclaimers } from "@/lib/disclaimer-generator";
 import GlossaryTerm from "@/components/GlossaryTerm";
 import { findGlossaryTerms } from "@/lib/legal-glossary";
+import { PORTAL_BASE_URL } from "@/lib/portal-url";
 
 /* ── Label formatting ── */
 function formatLabel(s: string): string {
@@ -1030,6 +1031,12 @@ function ResultsContent() {
           </p>
         </div>
         <div className="flex gap-2 flex-wrap justify-end" data-no-print>
+          <a
+            href={PORTAL_BASE_URL}
+            className="text-xs uppercase tracking-wider border border-[var(--border)] px-3 py-2 hover:bg-[var(--bg-elevated)]"
+          >
+            Portal
+          </a>
           <button
             onClick={() => window.print()}
             className="text-xs uppercase tracking-wider border border-[var(--border)] px-3 py-2 hover:bg-[var(--bg-elevated)]"

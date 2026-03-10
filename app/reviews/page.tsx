@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { useTheme } from "@/lib/theme";
+import { PORTAL_BASE_URL } from "@/lib/portal-url";
 
 interface ReviewListItem {
   id: string;
@@ -82,6 +83,12 @@ export default function ReviewsPage() {
           </p>
         </div>
         <div className="flex gap-2">
+          <a
+            href={PORTAL_BASE_URL}
+            className="text-xs uppercase tracking-wider border border-[var(--border)] px-4 py-2 hover:bg-[var(--bg-elevated)]"
+          >
+            Portal
+          </a>
           <button
             onClick={toggle}
             className="text-xs uppercase tracking-wider border border-[var(--border)] px-4 py-2 hover:bg-[var(--bg-elevated)]"
