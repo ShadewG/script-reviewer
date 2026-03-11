@@ -19,7 +19,7 @@ interface LineEditFormProps {
   caseStatus: string;
   hasMinors: boolean;
   onClose: () => void;
-  onAcceptEdit?: (edit: LineEdit) => void;
+  onAcceptEdit?: (edit: LineEdit, result: { verdict: string; legalFlags: LegalFlag[]; policyFlags: PolicyFlag[] } | null) => void;
 }
 
 function LineEditForm({
@@ -125,7 +125,7 @@ function LineEditForm({
           {newText !== originalText && onAcceptEdit && (
             <button
               onClick={() => {
-                onAcceptEdit({ lineNumber, originalText, newText, verdict: result.verdict, timestamp: Date.now() });
+                onAcceptEdit({ lineNumber, originalText, newText, verdict: result.verdict, timestamp: Date.now() }, result);
                 onClose();
               }}
               className="text-[10px] uppercase tracking-wider mt-2 px-3 py-1 border border-[var(--green)] text-[var(--green)] hover:bg-[var(--green)] hover:text-[var(--bg)]"
@@ -144,6 +144,14 @@ interface FlagDetail {
   flag: LegalFlag | PolicyFlag;
 }
 
+interface LineEditResult {
+  lineNumber: number;
+  newText: string;
+  verdict: string;
+  legalFlags: LegalFlag[];
+  policyFlags: PolicyFlag[];
+}
+
 interface Props {
   scriptText: string;
   legalFlags: LegalFlag[];
@@ -152,6 +160,7 @@ interface Props {
   caseStatus: string;
   hasMinors: boolean;
   flagFilter?: "all" | "legal" | "policy";
+  onLineEdited?: (result: LineEditResult) => void;
 }
 
 /** Split text into chunks: sentence boundaries first, then word boundaries as fallback */
@@ -283,6 +292,7 @@ export default function AnnotatedScriptView({
   caseStatus,
   hasMinors,
   flagFilter = "all",
+  onLineEdited,
 }: Props) {
   const { lines, legalFlags, policyFlags } = useMemo(
     () => normalizeScriptView(scriptText.split("\n"), rawLegalFlags, rawPolicyFlags),
@@ -541,7 +551,18 @@ export default function AnnotatedScriptView({
                       caseStatus={caseStatus}
                       hasMinors={hasMinors}
                       onClose={() => setEditingLine(null)}
-                      onAcceptEdit={(edit) => setEdits((prev) => [...prev.filter((e) => e.lineNumber !== edit.lineNumber), edit])}
+                      onAcceptEdit={(edit, editResult) => {
+                        setEdits((prev) => [...prev.filter((e) => e.lineNumber !== edit.lineNumber), edit]);
+                        if (onLineEdited && editResult) {
+                          onLineEdited({
+                            lineNumber: edit.lineNumber,
+                            newText: edit.newText,
+                            verdict: editResult.verdict,
+                            legalFlags: editResult.legalFlags,
+                            policyFlags: editResult.policyFlags,
+                          });
+                        }
+                      }}
                     />
                   </div>
                 )}

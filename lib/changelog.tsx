@@ -17,6 +17,14 @@ export interface ChangelogEntry {
 /* ── Changelog data — add new entries at the TOP ── */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "1.4.1",
+    date: "2026-03-11",
+    title: "Script Edits Now Update Score",
+    items: [
+      { type: "fix", text: "Accepting a line edit in the Script tab now auto-dismisses old flags on that line and recalculates the risk score" },
+    ],
+  },
+  {
     version: "1.4.0",
     date: "2026-03-11",
     title: "Dismiss Flags, Captions Input & Rename",

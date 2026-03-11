@@ -1941,6 +1941,25 @@ function ResultsContent() {
               caseStatus={data.caseStatus}
               hasMinors={data.hasMinors}
               flagFilter={flagFilter}
+              onLineEdited={(result) => {
+                // Auto-dismiss old flags on the edited line
+                for (const f of allLegalFlags) {
+                  if (f.line === result.lineNumber) {
+                    const fk = flagKey("legal", f.line, f.text);
+                    if (!isDismissed(fk)) {
+                      dismiss(fk, "Already addressed");
+                    }
+                  }
+                }
+                for (const f of allPolicyFlags) {
+                  if (f.line === result.lineNumber) {
+                    const fk = flagKey("policy", f.line, f.text);
+                    if (!isDismissed(fk)) {
+                      dismiss(fk, "Already addressed");
+                    }
+                  }
+                }
+              }}
             />
           </div>
         )}
