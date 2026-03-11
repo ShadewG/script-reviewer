@@ -9,6 +9,7 @@
 - [x] **Incident metadata + clustering primitives** — Persist why a frame/window was selected and cluster temporal duplicates before report conversion
 - [x] **Candidate scoring before model calls** — Added low-cost grayscale feature scoring to prioritize text-overlay / high-detail frames and penalize low-information frames
 - [x] **Multi-frame incident review** — Backend now reviews a short frame window around each candidate instead of a single still
+- [x] **PDF extraction hardening** — Added pure-Node PDF text fallback and runtime `pdftotext` install so normal supplemental PDFs no longer depend on Claude availability
 
 ### Frontend — Claude Follow-Ups
 - [x] **Video tab incident view** — Grouped incident table as default view with expand/collapse, severity sorting, deduplication, signature-based 180s window grouping

@@ -185,4 +185,6 @@ export interface StageUpdate {
   status: "pending" | "running" | "complete" | "error";
   data?: unknown;
   error?: string;
+  note?: string;
+  provider?: string;
 }

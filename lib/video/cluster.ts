@@ -1,4 +1,5 @@
 import type { VideoFrameFinding, VideoFrameRisk } from "@/lib/pipeline/types";
+import { normalizeVideoRiskText, videoRiskFamilyKey } from "@/lib/video/risk-family";
 
 const CLUSTER_WINDOW_SECONDS = 180;
 const SEVERITY_ORDER: Record<VideoFrameRisk["severity"], number> = {
@@ -19,21 +20,9 @@ type FindingCluster = {
   candidateScore: number;
 };
 
-function normalizeLoose(input: string): string {
-  return input
-    .toLowerCase()
-    .replace(/\[video\s+\d\d:\d\d:\d\d\]/g, " ")
-    .replace(/\b\d{2}:\d{2}:\d{2}\b/g, " ")
-    .replace(/\b\d{1,4}[-/:]\d{1,4}[-/:]?\d{0,4}\b/g, " ")
-    .replace(/\b[0-9a-f]{2,}\b/g, " ")
-    .replace(/[^a-z\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function riskTokens(input: string): Set<string> {
   return new Set(
-    normalizeLoose(input)
+    normalizeVideoRiskText(input)
       .split(" ")
       .filter((token) => token.length >= 4)
   );
@@ -59,54 +48,8 @@ function dominantRisk(finding: VideoFrameFinding): VideoFrameRisk | null {
   })[0];
 }
 
-function riskFamilyKey(risk: VideoFrameRisk): string {
-  const joined = normalizeLoose(
-    `${risk.policyName} ${risk.reasoning} ${risk.detectedText ?? ""}`
-  );
-
-  if (
-    risk.category === "privacy" &&
-    /\b(minor|child|daughter|son|grandchild|juvenile|face|portrait|unblurred)\b/.test(joined)
-  ) {
-    return "privacy:minor_identity";
-  }
-  if (
-    risk.category === "privacy" &&
-    /\b(personal overview|possible relatives|possible neighbors|possible neighbours|possible associates|possible address history|possible social media|possible usernames|possible owned properties|contact info|aliases|best match|people search|background report|data broker|dossier|doxxing)\b/.test(joined)
-  ) {
-    return "privacy:pii_dossier";
-  }
-  if (
-    risk.category === "privacy" &&
-    /\b(ip address|ipv4|ipv6|meta platforms|device identifier|device fingerprint|user agent|agent string|login|account activity)\b/.test(joined)
-  ) {
-    return "privacy:technical_record";
-  }
-  if (
-    risk.category === "privacy" &&
-    /\b(phone|email|address|street|license plate|plate number|contact|home|property)\b/.test(joined)
-  ) {
-    return "privacy:contact_or_address";
-  }
-  if (
-    risk.category === "privacy" &&
-    /\b(instagram|facebook|social media|followers|following|digital creator|profile photo|profile)\b/.test(joined)
-  ) {
-    return "privacy:social_profile";
-  }
-  if (/\b(casefile|communication doc|agency|phone field|in person|e mail|notes|report form)\b/.test(joined)) {
-    return `${risk.category}:casefile_document`;
-  }
-  if (/\b(graphic|corpse|body|blood|decomposition|remains|gore|injury|grave)\b/.test(joined)) {
-    return `${risk.category}:graphic_detail`;
-  }
-
-  const policy = normalizeLoose(risk.policyName).slice(0, 60);
-  return `${risk.category}|${policy}`;
-}
-
 function buildFindingSignature(finding: VideoFrameFinding): string {
-  const joined = normalizeLoose(
+  const joined = normalizeVideoRiskText(
     (finding.risks ?? [])
       .map((risk) => `${risk.policyName} ${risk.reasoning} ${risk.detectedText ?? ""}`)
       .join(" ")
@@ -122,15 +65,15 @@ function buildFindingSignature(finding: VideoFrameFinding): string {
   }
   if (
     dominant.category === "privacy" &&
-    /\b(phone|email|address|street|license plate|plate number|contact|passport|driver)\b/.test(joined)
-  ) {
-    return "privacy:contact_or_address";
-  }
-  if (
-    dominant.category === "privacy" &&
     /\b(minor|child|daughter|son|grandchild|juvenile|unblurred|portrait|face)\b/.test(joined)
   ) {
     return "privacy:minor_identity";
+  }
+  if (
+    dominant.category === "privacy" &&
+    /\b(phone|email|address|street|license plate|plate number|contact|passport|driver)\b/.test(joined)
+  ) {
+    return "privacy:contact_or_address";
   }
   if (
     /\b(gore|graphic|corpse|dead body|decomposition|blood|body|injury|wound)\b/.test(joined)
@@ -143,7 +86,7 @@ function buildFindingSignature(finding: VideoFrameFinding): string {
     return `${dominant.category}:third_party_footage`;
   }
 
-  return `${dominant.category}:${normalizeLoose(dominant.policyName).slice(0, 40) || "unknown"}`;
+  return `${dominant.category}:${normalizeVideoRiskText(dominant.policyName).slice(0, 40) || "unknown"}`;
 }
 
 function findingPriority(finding: VideoFrameFinding): number {
@@ -156,7 +99,7 @@ function findingPriority(finding: VideoFrameFinding): number {
 
 function mergeRisks(target: Map<string, VideoFrameRisk>, source: VideoFrameFinding): void {
   for (const risk of source.risks ?? []) {
-    const key = riskFamilyKey(risk);
+    const key = videoRiskFamilyKey(risk);
     const existing = target.get(key);
     if (!existing) {
       target.set(key, risk);

@@ -1,6 +1,14 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { PDFDocument } from "pdf-lib";
+import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import os from "node:os";
+import path from "node:path";
 import type { DocumentFacts } from "./types";
+import { callGPTMiniDetailed } from "@/lib/ai/openai";
+
+const require = createRequire(import.meta.url);
 
 let _anthropic: Anthropic | null = null;
 function getAnthropic(): Anthropic {
@@ -70,6 +78,8 @@ Be thorough but CONCISE — extract every verifiable fact, but keep descriptions
 const MAX_PDF_PAGES = 90;
 const EXTRACTION_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 1200;
+const MAX_TEXT_CHARS_PER_CHUNK = 60_000;
+const MIN_PDF_TEXT_CHARS = 500;
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -156,8 +166,14 @@ async function extractFromContent(
     throw new Error(`Claude returned empty response for "${fileName}"`);
   }
 
-  // Parse JSON response
-  let cleaned = result.trim();
+  return parseExtractionJson(result, fileName);
+}
+
+function parseExtractionJson(
+  rawResult: string,
+  fileName: string
+): Record<string, unknown> {
+  let cleaned = rawResult.trim();
   cleaned = cleaned
     .replace(/^```[\w]*\s*\n?/, "")
     .replace(/\n?```\s*$/, "");
@@ -211,6 +227,219 @@ async function extractFromContent(
       );
     }
   }
+}
+
+async function extractFromPlainText(
+  text: string,
+  fileName: string
+): Promise<Record<string, unknown>> {
+  const prompt = `Extract all factual information from this document. File: ${fileName}
+
+DOCUMENT TEXT:
+${text}`;
+  const result = await callGPTMiniDetailed(EXTRACTION_SYSTEM, prompt);
+  if (!result.text) {
+    throw new Error(`OpenAI returned empty response for "${fileName}"`);
+  }
+  return parseExtractionJson(result.text, fileName);
+}
+
+async function runPdftotext(fileBuffer: Buffer): Promise<string> {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "script-reviewer-pdf-"));
+  const inputPath = path.join(tempDir, "input.pdf");
+  try {
+    await writeFile(inputPath, fileBuffer);
+    return await new Promise<string>((resolve, reject) => {
+      execFile(
+        "pdftotext",
+        ["-layout", "-enc", "UTF-8", inputPath, "-"],
+        { maxBuffer: 64 * 1024 * 1024 },
+        (error, stdout, stderr) => {
+          if (error) {
+            reject(new Error(stderr || error.message));
+            return;
+          }
+          resolve(stdout);
+        }
+      );
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function runPdfParseText(fileBuffer: Buffer): Promise<string> {
+  const { PDFParse } = require("pdf-parse") as {
+    PDFParse: new (input: { data: Buffer }) => {
+      getText: () => Promise<{ text?: string }>;
+      destroy: () => Promise<void>;
+    };
+  };
+  const parser = new PDFParse({ data: fileBuffer });
+  try {
+    const result = await parser.getText();
+    return result.text ?? "";
+  } finally {
+    try {
+      await parser.destroy();
+    } catch {
+      // Best-effort cleanup only.
+    }
+  }
+}
+
+async function extractPdfText(fileBuffer: Buffer, fileName: string): Promise<string | null> {
+  try {
+    return await runPdftotext(fileBuffer);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[upload-docs] pdftotext failed for "${fileName}": ${msg}`);
+  }
+
+  try {
+    const fallbackText = await runPdfParseText(fileBuffer);
+    if (fallbackText.trim()) {
+      console.log(`[upload-docs] pdf-parse fallback succeeded for "${fileName}"`);
+      return fallbackText;
+    }
+    console.warn(`[upload-docs] pdf-parse returned no text for "${fileName}"`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[upload-docs] pdf-parse failed for "${fileName}": ${msg}`);
+  }
+
+  return null;
+}
+
+function splitPdfTextIntoChunks(
+  text: string
+): Array<{ label: string; text: string }> {
+  const pages = text
+    .split("\f")
+    .map((page) => page.trim())
+    .filter(Boolean);
+
+  if (pages.length === 0) return [];
+
+  const chunks: Array<{ label: string; text: string }> = [];
+  let chunkStartPage = 1;
+  let currentPages: string[] = [];
+  let currentLength = 0;
+
+  const flush = (endPage: number) => {
+    if (!currentPages.length) return;
+    const label =
+      chunkStartPage === endPage
+        ? `page ${chunkStartPage}`
+        : `pages ${chunkStartPage}-${endPage}`;
+    chunks.push({ label, text: currentPages.join("\n\n") });
+    currentPages = [];
+    currentLength = 0;
+  };
+
+  pages.forEach((pageText, index) => {
+    const pageNumber = index + 1;
+    const pageBlock = `Page ${pageNumber}\n${pageText}`;
+    if (
+      currentPages.length > 0 &&
+      currentLength + pageBlock.length + 2 > MAX_TEXT_CHARS_PER_CHUNK
+    ) {
+      flush(pageNumber - 1);
+      chunkStartPage = pageNumber;
+    }
+    currentPages.push(pageBlock);
+    currentLength += pageBlock.length + 2;
+  });
+
+  flush(pages.length);
+  return chunks;
+}
+
+function splitChunkTextIntoPages(text: string): string[] {
+  return text
+    .split(/(?=Page \d+\n)/)
+    .map((page) => page.trim())
+    .filter(Boolean);
+}
+
+function deriveChunkLabelFromPages(pages: string[]): string {
+  const numbers = pages
+    .map((page) => {
+      const match = page.match(/^Page (\d+)\n/);
+      return match ? Number(match[1]) : null;
+    })
+    .filter((value): value is number => value !== null);
+
+  if (numbers.length === 0) return "partial";
+  if (numbers[0] === numbers[numbers.length - 1]) return `page ${numbers[0]}`;
+  return `pages ${numbers[0]}-${numbers[numbers.length - 1]}`;
+}
+
+async function extractChunkWithRetry(
+  fileName: string,
+  chunkLabel: string,
+  chunkText: string
+): Promise<Record<string, unknown>[]> {
+  const label = `${fileName} (${chunkLabel})`;
+  try {
+    return [await extractFromPlainText(chunkText, label)];
+  } catch (err) {
+    const pages = splitChunkTextIntoPages(chunkText);
+    if (pages.length <= 1) throw err;
+
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[upload-docs] Retrying "${label}" as smaller text chunks after error: ${msg}`
+    );
+
+    const midpoint = Math.ceil(pages.length / 2);
+    const leftPages = pages.slice(0, midpoint);
+    const rightPages = pages.slice(midpoint);
+
+    const left = await extractChunkWithRetry(
+      fileName,
+      deriveChunkLabelFromPages(leftPages),
+      leftPages.join("\n\n")
+    );
+    const right = await extractChunkWithRetry(
+      fileName,
+      deriveChunkLabelFromPages(rightPages),
+      rightPages.join("\n\n")
+    );
+    return [...left, ...right];
+  }
+}
+
+async function extractFromPdfText(
+  fileBuffer: Buffer,
+  fileName: string
+): Promise<DocumentFacts | null> {
+  const text = await extractPdfText(fileBuffer, fileName);
+  if (!text) return null;
+
+  const trimmed = text.trim();
+  if (trimmed.length < MIN_PDF_TEXT_CHARS) {
+    console.warn(
+      `[upload-docs] pdftotext output too small for "${fileName}" (${trimmed.length} chars)`
+    );
+    return null;
+  }
+
+  const textChunks = splitPdfTextIntoChunks(trimmed);
+  if (textChunks.length === 0) return null;
+
+  const parts: Record<string, unknown>[] = [];
+  for (const chunk of textChunks) {
+    if (textChunks.length === 1) {
+      parts.push(await extractFromPlainText(chunk.text, fileName));
+      continue;
+    }
+    parts.push(...(await extractChunkWithRetry(fileName, chunk.label, chunk.text)));
+  }
+
+  const merged = normalizeDocumentFacts(mergeExtractions(parts, fileName));
+  merged.rawTextPreview = trimToMax(trimmed, 5000);
+  return merged;
 }
 
 /** Merge multiple extraction results into a single DocumentFacts, deduplicating people by name */
@@ -382,6 +611,14 @@ export async function processDocument(
       verifiableFacts:
         (parsed.verifiableFacts as DocumentFacts["verifiableFacts"]) ?? [],
     });
+  }
+
+  const textExtractedFacts = await extractFromPdfText(fileBuffer, fileName);
+  if (textExtractedFacts) {
+    console.log(
+      `[upload-docs] Extracted "${fileName}" from PDF text (${textExtractedFacts.verifiableFacts.length} facts)`
+    );
+    return textExtractedFacts;
   }
 
   // PDF: split if > 100 pages and process chunks sequentially to reduce rate-limit failures

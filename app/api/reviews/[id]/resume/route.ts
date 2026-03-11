@@ -63,15 +63,31 @@ export async function POST(
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
+      let streamClosed = false;
       const send = (data: unknown) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+        if (streamClosed) return;
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+        } catch {
+          streamClosed = true;
+        }
       };
 
       const onProgress = (update: StageUpdate) => {
-        send({ type: "stage", ...update });
+        send({ type: "stage", ...update, stage: update.stage + 1 });
       };
 
       try {
+        send({
+          type: "stage",
+          stage: 0,
+          name: "Document Extraction",
+          status: "complete",
+          note:
+            metadata.documentFacts && metadata.documentFacts.length > 0
+              ? `Using ${metadata.documentFacts.length} extracted document${metadata.documentFacts.length === 1 ? "" : "s"}`
+              : "No supplemental documents queued",
+        });
         const report = await runPipeline(review.id, normalizedScriptText, metadata, onProgress);
         send({ type: "complete", reviewId: review.id, report });
       } catch (err) {
@@ -82,7 +98,9 @@ export async function POST(
         });
         send({ type: "error", error: msg });
       } finally {
-        controller.close();
+        if (!streamClosed) {
+          controller.close();
+        }
       }
     },
   });

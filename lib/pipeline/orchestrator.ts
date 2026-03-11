@@ -21,6 +21,7 @@ import {
 } from "../prompts/fact-check";
 import { SYNTHESIS_SYSTEM, buildSynthesisPrompt } from "../prompts/synthesis";
 import { clusterVideoFindings } from "../video/cluster";
+import { collapseVideoRisks } from "../video/risk-family";
 import { runMultiModelLegalReview } from "./cross-validate";
 import {
   heuristicLegalFlags,
@@ -586,6 +587,12 @@ export async function runPipeline(
     videoTranscript: metadata.videoTranscript ?? review.videoTranscript ?? undefined,
   };
   const clusteredVideoFindings = clusterVideoFindings(enrichedMetadata.videoFindings ?? []);
+  const normalizedVideoTimeline = clusteredVideoFindings
+    .filter((f) => Array.isArray(f.risks) && f.risks.length > 0)
+    .map((finding) => ({
+      ...finding,
+      risks: collapseVideoRisks(finding.risks ?? []),
+    }));
 
   const warnings = asStringArray(review.analysisWarnings);
   const addWarning = (warning: string) => {
@@ -1095,9 +1102,7 @@ export async function runPipeline(
       maxItems: 5,
       dropLowPriority: false,
     });
-    report.videoTimeline = clusteredVideoFindings.filter(
-      (f) => Array.isArray(f.risks) && f.risks.length > 0
-    );
+    report.videoTimeline = normalizedVideoTimeline;
     report.riskDashboard.monetization =
       deriveMonetizationFromPolicyFlags(policyFlags);
     await prisma.review.update({
@@ -1134,9 +1139,7 @@ export async function runPipeline(
       recommendedEdits: [],
       edsaChecklist: [],
       analysisWarnings: warnings,
-      videoTimeline: clusteredVideoFindings.filter(
-        (f) => Array.isArray(f.risks) && f.risks.length > 0
-      ),
+      videoTimeline: normalizedVideoTimeline,
       legalFlags,
       policyFlags,
     };

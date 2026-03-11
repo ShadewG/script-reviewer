@@ -5,11 +5,15 @@ import { runPipeline } from "@/lib/pipeline/orchestrator";
 import { parseGoogleDocsUrl, fetchGoogleDocText } from "@/lib/google-docs/fetch";
 import { extractLatestVersion } from "@/lib/utils/extract-latest-version";
 import { normalizeScriptForAnalysis } from "@/lib/utils/normalize-script";
+import {
+  MAX_DOCUMENT_TOTAL_SIZE,
+  formatDocumentSize,
+  processUploadedDocuments,
+} from "@/lib/documents/upload";
 import type { CaseMetadata, StageUpdate } from "@/lib/pipeline/types";
 import type { DocumentFacts } from "@/lib/documents/types";
 import type { VideoFrameFinding } from "@/lib/pipeline/types";
 
-// nullable() handles Claude returning null for optional fields
 const optStr = (max: number) => z.string().max(max).nullable().optional();
 const optNum = () => z.number().nullable().optional();
 
@@ -64,14 +68,15 @@ const DocumentFactsSchema = z.array(
           confidence: z.enum(["confirmed", "likely", "uncertain"]),
         })
       )
-      .max(200),
+      .max(300),
     rawTextPreview: z.string().max(5000).nullable().optional(),
   })
-).max(10);
+).max(25);
 
 const AnalysisModeSchema = z
   .enum(["full", "legal_only", "monetization_only"])
   .optional();
+const CaseStatusSchema = z.enum(["convicted", "charged", "suspect", "acquitted", "unsolved"]);
 
 const VideoFindingsSchema = z.array(
   z.object({
@@ -102,8 +107,24 @@ const VideoFindingsSchema = z.array(
   })
 ).max(200);
 
+type ParsedAnalyzeRequest = {
+  script?: string;
+  gdocUrl?: string;
+  state?: string;
+  caseStatus?: string;
+  hasMinors?: boolean;
+  footageTypes?: unknown;
+  videoTitle?: string;
+  thumbnailDesc?: string;
+  documentFacts?: unknown;
+  videoFindings?: unknown;
+  videoTranscript?: string;
+  analysisMode?: unknown;
+  rawDocumentFiles: File[];
+};
+
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+export const maxDuration = 900;
 
 function extractVideoTranscript(input: string): string | undefined {
   const marker = "\n\n--- VIDEO TRANSCRIPT ---\n\n";
@@ -113,8 +134,74 @@ function extractVideoTranscript(input: string): string | undefined {
   return transcript || undefined;
 }
 
+function parseOptionalString(value: FormDataEntryValue | null): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function parseOptionalBoolean(value: FormDataEntryValue | null): boolean | undefined {
+  if (typeof value !== "string") return undefined;
+  return value === "true" || value === "1";
+}
+
+function parseOptionalJson(value: FormDataEntryValue | null): unknown {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  return JSON.parse(value);
+}
+
+async function parseAnalyzeRequest(req: NextRequest): Promise<ParsedAnalyzeRequest> {
+  const contentType = req.headers.get("content-type") || "";
+  if (!contentType.includes("multipart/form-data")) {
+    const body = await req.json();
+    return {
+      ...body,
+      rawDocumentFiles: [],
+    };
+  }
+
+  const formData = await req.formData();
+  return {
+    script: parseOptionalString(formData.get("script")),
+    gdocUrl: parseOptionalString(formData.get("gdocUrl")),
+    state: parseOptionalString(formData.get("state")),
+    caseStatus: parseOptionalString(formData.get("caseStatus")),
+    hasMinors: parseOptionalBoolean(formData.get("hasMinors")),
+    footageTypes: parseOptionalJson(formData.get("footageTypes")),
+    videoTitle: parseOptionalString(formData.get("videoTitle")),
+    thumbnailDesc: parseOptionalString(formData.get("thumbnailDesc")),
+    documentFacts: parseOptionalJson(formData.get("documentFacts")),
+    videoFindings: parseOptionalJson(formData.get("videoFindings")),
+    videoTranscript: parseOptionalString(formData.get("videoTranscript")),
+    analysisMode: parseOptionalString(formData.get("analysisMode")),
+    rawDocumentFiles: formData
+      .getAll("files")
+      .filter((value): value is File => value instanceof File && value.size > 0),
+  };
+}
+
+function formatDocumentStageNote(documents: DocumentFacts[], errors: string[]) {
+  if (documents.length === 0 && errors.length === 0) {
+    return "No supplemental documents queued";
+  }
+  if (documents.length === 0) {
+    return `No supplemental documents extracted (${errors.length} warning${errors.length === 1 ? "" : "s"})`;
+  }
+  const factCount = documents.reduce((sum, doc) => sum + doc.verifiableFacts.length, 0);
+  const warningSuffix =
+    errors.length > 0 ? `, ${errors.length} warning${errors.length === 1 ? "" : "s"}` : "";
+  return `${documents.length} document${documents.length === 1 ? "" : "s"} ready (${factCount} facts${warningSuffix})`;
+}
+
 export async function POST(req: NextRequest) {
-  const body = await req.json();
+  let parsedRequest: ParsedAnalyzeRequest;
+  try {
+    parsedRequest = await parseAnalyzeRequest(req);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : "Invalid request payload";
+    return Response.json({ error: "Invalid request payload", detail }, { status: 400 });
+  }
+
   const {
     script: rawScript,
     gdocUrl,
@@ -128,9 +215,17 @@ export async function POST(req: NextRequest) {
     videoFindings,
     videoTranscript: rawVideoTranscript,
     analysisMode,
-  } = body;
+    rawDocumentFiles,
+  } = parsedRequest;
 
-  // Resolve script text from either direct paste or Google Doc URL
+  const totalQueuedDocumentSize = rawDocumentFiles.reduce((sum, file) => sum + file.size, 0);
+  if (totalQueuedDocumentSize > MAX_DOCUMENT_TOTAL_SIZE) {
+    return Response.json(
+      { error: `Total upload size exceeds ${formatDocumentSize(MAX_DOCUMENT_TOTAL_SIZE)}` },
+      { status: 400 }
+    );
+  }
+
   let script = rawScript;
   let sourceUrl: string | undefined;
 
@@ -151,7 +246,6 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Extract only the latest version if the doc contains multiple drafts
   if (script) {
     script = extractLatestVersion(script);
     script = normalizeScriptForAnalysis(script);
@@ -164,6 +258,14 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const parsedCaseStatus = CaseStatusSchema.safeParse(caseStatus);
+  if (!parsedCaseStatus.success) {
+    return Response.json(
+      { error: "Invalid caseStatus" },
+      { status: 400 }
+    );
+  }
+
   const parsedAnalysisMode = AnalysisModeSchema.safeParse(analysisMode);
   if (!parsedAnalysisMode.success) {
     return Response.json(
@@ -172,7 +274,6 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Validate documentFacts if provided
   let validatedFacts: DocumentFacts[] | undefined;
   if (Array.isArray(documentFacts) && documentFacts.length > 0) {
     try {
@@ -205,9 +306,9 @@ export async function POST(req: NextRequest) {
 
   const metadata: CaseMetadata = {
     state,
-    caseStatus,
+    caseStatus: parsedCaseStatus.data,
     hasMinors: hasMinors ?? false,
-    footageTypes: footageTypes ?? [],
+    footageTypes: Array.isArray(footageTypes) ? footageTypes as string[] : [],
     videoTitle,
     thumbnailDesc,
     videoTranscript:
@@ -219,7 +320,6 @@ export async function POST(req: NextRequest) {
     videoFindings: validatedVideoFindings,
   };
 
-  // Derive a title from the first meaningful line of the script
   const derivedTitle = script
     .split("\n")
     .map((l: string) => l.trim())
@@ -232,14 +332,14 @@ export async function POST(req: NextRequest) {
       scriptText: script,
       sourceUrl,
       caseState: state,
-      caseStatus,
+      caseStatus: parsedCaseStatus.data,
       hasMinors: metadata.hasMinors,
       footageTypes: metadata.footageTypes,
       videoTitle,
       thumbnailDesc,
       videoTranscript: metadata.videoTranscript,
-      supplementalDocs: validatedFacts as never ?? undefined,
-      videoFindings: validatedVideoFindings as never ?? undefined,
+      supplementalDocs: validatedFacts ? (validatedFacts as never) : undefined,
+      videoFindings: validatedVideoFindings ? (validatedVideoFindings as never) : undefined,
       status: "processing",
     },
   });
@@ -247,16 +347,82 @@ export async function POST(req: NextRequest) {
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
+      let streamClosed = false;
       const send = (data: unknown) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+        if (streamClosed) return;
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+        } catch {
+          streamClosed = true;
+        }
       };
 
-      const onProgress = (update: StageUpdate) => {
-        send({ type: "stage", ...update });
+      const forwardPipelineProgress = (update: StageUpdate) => {
+        send({ type: "stage", ...update, stage: update.stage + 1 });
       };
 
       try {
-        const report = await runPipeline(review.id, script, metadata, onProgress);
+        let extractedDocs = validatedFacts ?? [];
+        let analysisWarnings: string[] = [];
+
+        if (rawDocumentFiles.length > 0) {
+          send({
+            type: "stage",
+            stage: 0,
+            name: "Document Extraction",
+            status: "running",
+            note: `Queued ${rawDocumentFiles.length} document${rawDocumentFiles.length === 1 ? "" : "s"} for extraction`,
+          });
+
+          const result = await processUploadedDocuments(rawDocumentFiles, {
+            onProgress: (progress) => {
+              send({
+                type: "stage",
+                stage: 0,
+                name: "Document Extraction",
+                status: "running",
+                note: `${progress.index}/${progress.total} — ${progress.note ?? progress.fileName}`,
+              });
+            },
+          });
+
+          extractedDocs = [...(validatedFacts ?? []), ...result.documents];
+          analysisWarnings = result.errors.map((error) => `Supplemental document warning: ${error}`);
+
+          await prisma.review.update({
+            where: { id: review.id },
+            data: {
+              supplementalDocs: extractedDocs.length > 0 ? (extractedDocs as never) : undefined,
+              analysisWarnings: analysisWarnings as never,
+            },
+          });
+
+          send({
+            type: "stage",
+            stage: 0,
+            name: "Document Extraction",
+            status: "complete",
+            note: formatDocumentStageNote(extractedDocs, result.errors),
+          });
+        } else {
+          send({
+            type: "stage",
+            stage: 0,
+            name: "Document Extraction",
+            status: "complete",
+            note: formatDocumentStageNote(extractedDocs, []),
+          });
+        }
+
+        const report = await runPipeline(
+          review.id,
+          script,
+          {
+            ...metadata,
+            documentFacts: extractedDocs.length > 0 ? extractedDocs : undefined,
+          },
+          forwardPipelineProgress
+        );
         send({ type: "complete", reviewId: review.id, report });
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Pipeline failed";
@@ -266,7 +432,9 @@ export async function POST(req: NextRequest) {
         });
         send({ type: "error", error: msg });
       } finally {
-        controller.close();
+        if (!streamClosed) {
+          controller.close();
+        }
       }
     },
   });
