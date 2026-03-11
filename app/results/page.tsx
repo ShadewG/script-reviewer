@@ -2542,7 +2542,7 @@ function ResultsContent() {
                           </span>
                           <button
                             onClick={() => restore(fKey)}
-                            className="text-[10px] text-[var(--amber)] hover:text-[var(--yellow)] underline ml-auto"
+                            className="text-[10px] uppercase tracking-wider px-2 py-1 border border-[var(--amber)] text-[var(--amber)] hover:bg-[var(--amber)] hover:text-[var(--bg)] ml-auto transition-colors"
                           >
                             Restore
                           </button>
@@ -2568,7 +2568,7 @@ function ResultsContent() {
                       ) : (
                         <button
                           onClick={() => setDismissingKey(fKey)}
-                          className="text-[10px] text-[var(--text-dim)] hover:text-[var(--text)] underline"
+                          className="text-[10px] uppercase tracking-wider px-2 py-1 border border-[var(--border)] text-[var(--text-dim)] hover:text-[var(--text)] hover:bg-[var(--bg-elevated)] transition-colors"
                         >
                           Dismiss
                         </button>
