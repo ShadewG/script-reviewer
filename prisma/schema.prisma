@@ -95,6 +95,7 @@ model Review {
   dismissedFlags      Json?   // { key, reason, at }[] — persisted dismissals
   originalRiskScore   Int?    // original score before dismissals
   originalVerdict     String? // original verdict before dismissals
+  scriptEdits         Json?   // LineEdit[] — accepted line edits from Script tab
 
   status    String @default("pending") // pending, processing, completed, failed
   error     String?

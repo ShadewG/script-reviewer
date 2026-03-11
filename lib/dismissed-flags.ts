@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useUser } from "@/lib/user";
 
 export type DismissReason =
   | "Accepted risk"
@@ -15,11 +16,14 @@ export const DISMISS_REASONS: DismissReason[] = [
   "Cleared by counsel",
 ];
 
-interface DismissedEntry {
+export interface DismissedEntry {
   key: string;
   reason: DismissReason;
   note?: string;
   at: number;
+  userId?: string;
+  displayName?: string;
+  avatarUrl?: string;
 }
 
 interface DismissedStore {
@@ -88,6 +92,7 @@ export interface AdjustedScore {
 }
 
 export function useDismissedFlags(reviewId: string) {
+  const user = useUser();
   const [dismissed, setDismissed] = useState<DismissedEntry[]>([]);
   const [adjustedScore, setAdjustedScore] = useState<AdjustedScore | null>(null);
   const syncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -158,13 +163,22 @@ export function useDismissedFlags(reviewId: string) {
     (key: string, reason: DismissReason, note?: string) => {
       setDismissed((prev) => {
         if (prev.some((d) => d.key === key)) return prev;
-        const next = [...prev, { key, reason, note, at: Date.now() }];
+        const entry: DismissedEntry = {
+          key,
+          reason,
+          note,
+          at: Date.now(),
+          userId: user?.id,
+          displayName: user?.username ?? undefined,
+          avatarUrl: user?.avatar ?? undefined,
+        };
+        const next = [...prev, entry];
         saveStore({ version: 1, reviewId, dismissed: next });
         scheduleSync(next);
         return next;
       });
     },
-    [reviewId, scheduleSync],
+    [reviewId, scheduleSync, user],
   );
 
   const restore = useCallback(

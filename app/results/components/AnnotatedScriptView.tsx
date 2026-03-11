@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import type { LegalFlag, PolicyFlag } from "@/lib/pipeline/types";
+import { useUser } from "@/lib/user";
 
 interface LineEdit {
   lineNumber: number;
@@ -9,6 +10,9 @@ interface LineEdit {
   newText: string;
   verdict: string;
   timestamp: number;
+  userId?: string;
+  displayName?: string;
+  avatarUrl?: string;
 }
 
 interface LineEditFormProps {
@@ -161,6 +165,8 @@ interface Props {
   hasMinors: boolean;
   flagFilter?: "all" | "legal" | "policy";
   onLineEdited?: (result: LineEditResult) => void;
+  reviewId?: string;
+  savedEdits?: LineEdit[];
 }
 
 /** Split text into chunks: sentence boundaries first, then word boundaries as fallback */
@@ -293,7 +299,10 @@ export default function AnnotatedScriptView({
   hasMinors,
   flagFilter = "all",
   onLineEdited,
+  reviewId,
+  savedEdits,
 }: Props) {
+  const user = useUser();
   const { lines, legalFlags, policyFlags } = useMemo(
     () => normalizeScriptView(scriptText.split("\n"), rawLegalFlags, rawPolicyFlags),
     [scriptText, rawLegalFlags, rawPolicyFlags],
@@ -301,12 +310,29 @@ export default function AnnotatedScriptView({
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
   const [editingLine, setEditingLine] = useState<number | null>(null);
   const [currentFlagIndex, setCurrentFlagIndex] = useState(0);
-  const [edits, setEdits] = useState<LineEdit[]>([]);
+  const [edits, setEdits] = useState<LineEdit[]>(savedEdits ?? []);
   const [showEdits, setShowEdits] = useState(false);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectedRef = useRef<HTMLDivElement>(null);
   const scriptContainerRef = useRef<HTMLDivElement>(null);
   const [scrollRatio, setScrollRatio] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0.1);
+
+  // Persist edits to server (debounced)
+  const persistEdits = useCallback(
+    (updated: LineEdit[]) => {
+      if (!reviewId) return;
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = setTimeout(() => {
+        fetch(`/api/reviews/${reviewId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scriptEdits: updated }),
+        }).catch(() => {});
+      }, 500);
+    },
+    [reviewId],
+  );
 
   // Build visible line -> flags map (respects flagFilter)
   const visibleLineFlags = useMemo(() => {
@@ -465,7 +491,20 @@ export default function AnnotatedScriptView({
                   </div>
                   {/* Line content */}
                   <div className="pl-3 pr-2 whitespace-pre-wrap break-all flex-1">
-                    {line || "\u00A0"}
+                    {lineEdit ? (
+                      <span className="flex items-start gap-1.5">
+                        {lineEdit.avatarUrl && (
+                          <img src={lineEdit.avatarUrl} alt="" className="w-4 h-4 rounded-full mt-1.5 flex-shrink-0" />
+                        )}
+                        <span>
+                          <span className="line-through opacity-40">{lineEdit.originalText}</span>
+                          {" "}
+                          <span className="text-[var(--green)]">{lineEdit.newText}</span>
+                        </span>
+                      </span>
+                    ) : (
+                      line || "\u00A0"
+                    )}
                   </div>
                 </div>
 
@@ -552,7 +591,17 @@ export default function AnnotatedScriptView({
                       hasMinors={hasMinors}
                       onClose={() => setEditingLine(null)}
                       onAcceptEdit={(edit, editResult) => {
-                        setEdits((prev) => [...prev.filter((e) => e.lineNumber !== edit.lineNumber), edit]);
+                        const taggedEdit: LineEdit = {
+                          ...edit,
+                          userId: user?.id,
+                          displayName: user?.username ?? undefined,
+                          avatarUrl: user?.avatar ?? undefined,
+                        };
+                        setEdits((prev) => {
+                          const updated = [...prev.filter((e) => e.lineNumber !== edit.lineNumber), taggedEdit];
+                          persistEdits(updated);
+                          return updated;
+                        });
                         if (onLineEdited && editResult) {
                           onLineEdited({
                             lineNumber: edit.lineNumber,
@@ -697,9 +746,17 @@ export default function AnnotatedScriptView({
                 <div className="space-y-2 max-h-48 overflow-y-auto">
                   {edits.map((edit) => (
                     <div key={edit.lineNumber} className="text-[10px] border border-[var(--border)] p-1.5">
-                      <div className="text-[var(--text-dim)] mb-1">Line {edit.lineNumber}</div>
-                      <div className="text-[var(--red)]">Original: {edit.originalText.slice(0, 60)}{edit.originalText.length > 60 ? "..." : ""}</div>
-                      <div className="text-[var(--green)]">Suggested: {edit.newText.slice(0, 60)}{edit.newText.length > 60 ? "..." : ""}</div>
+                      <div className="flex items-center gap-1.5 text-[var(--text-dim)] mb-1">
+                        {edit.avatarUrl ? (
+                          <img src={edit.avatarUrl} alt="" className="w-3.5 h-3.5 rounded-full" />
+                        ) : (
+                          <span className="w-3.5 h-3.5 rounded-full bg-[var(--border)] inline-block" />
+                        )}
+                        <span>{edit.displayName ?? "Unknown"}</span>
+                        <span className="ml-auto">L{edit.lineNumber}</span>
+                      </div>
+                      <div className="text-[var(--red)]">- {edit.originalText.slice(0, 60)}{edit.originalText.length > 60 ? "..." : ""}</div>
+                      <div className="text-[var(--green)]">+ {edit.newText.slice(0, 60)}{edit.newText.length > 60 ? "..." : ""}</div>
                     </div>
                   ))}
                 </div>

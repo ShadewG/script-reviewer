@@ -186,6 +186,7 @@ interface ReviewData {
   researchData: Record<string, unknown> | null;
   factCheckData: { summary: string; findings: FactCheckFinding[] } | null;
   analysisWarnings: string[] | null;
+  scriptEdits: Array<{ lineNumber: number; originalText: string; newText: string; verdict: string; timestamp: number; userId?: string; displayName?: string; avatarUrl?: string }> | null;
   status: string;
   error: string | null;
 }
@@ -1941,6 +1942,8 @@ function ResultsContent() {
               caseStatus={data.caseStatus}
               hasMinors={data.hasMinors}
               flagFilter={flagFilter}
+              reviewId={id ?? undefined}
+              savedEdits={Array.isArray(data.scriptEdits) ? data.scriptEdits : undefined}
               onLineEdited={(result) => {
                 // Auto-dismiss old flags on the edited line
                 for (const f of allLegalFlags) {
@@ -2556,8 +2559,11 @@ function ResultsContent() {
                     <div className="mt-2 pt-2 border-t border-[var(--border)] flex items-center gap-2" data-no-print>
                       {dismissed ? (
                         <>
-                          <span className="text-[10px] text-[var(--text-dim)]">
-                            Dismissed: {dismissal?.reason}
+                          <span className="text-[10px] text-[var(--text-dim)] flex items-center gap-1.5">
+                            {dismissal?.avatarUrl ? (
+                              <img src={dismissal.avatarUrl} alt="" className="w-3.5 h-3.5 rounded-full" />
+                            ) : null}
+                            Dismissed{dismissal?.displayName ? ` by ${dismissal.displayName}` : ""}: {dismissal?.reason}
                           </span>
                           <button
                             onClick={() => restore(fKey)}
@@ -2750,8 +2756,11 @@ function ResultsContent() {
                     <div className="mt-2 pt-2 border-t border-[var(--border)] flex items-center gap-2" data-no-print>
                       {dismissed ? (
                         <>
-                          <span className="text-[10px] text-[var(--text-dim)]" style={{ textDecoration: "none" }}>
-                            Dismissed: {dismissal?.reason}
+                          <span className="text-[10px] text-[var(--text-dim)] flex items-center gap-1.5" style={{ textDecoration: "none" }}>
+                            {dismissal?.avatarUrl ? (
+                              <img src={dismissal.avatarUrl} alt="" className="w-3.5 h-3.5 rounded-full" />
+                            ) : null}
+                            Dismissed{dismissal?.displayName ? ` by ${dismissal.displayName}` : ""}: {dismissal?.reason}
                           </span>
                           <button
                             onClick={() => restore(fKey)}
