@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { ThemeProvider } from "@/lib/theme";
+import { ChangelogProvider } from "@/lib/changelog";
 
 export const metadata: Metadata = {
   title: "SCRIPT SHIELD",
@@ -22,7 +23,9 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
       </head>
       <body>
-        <ThemeProvider>{children}</ThemeProvider>
+        <ThemeProvider>
+          <ChangelogProvider>{children}</ChangelogProvider>
+        </ThemeProvider>
       </body>
     </html>
   );
