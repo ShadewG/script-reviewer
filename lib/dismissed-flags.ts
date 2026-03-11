@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 export type DismissReason =
   | "Accepted risk"
@@ -62,12 +62,64 @@ function saveStore(store: DismissedStore) {
   } catch {}
 }
 
+/** Sync dismissed flags to server; returns adjusted score/verdict */
+async function syncToServer(
+  reviewId: string,
+  dismissed: DismissedEntry[],
+): Promise<{ riskScore: number; verdict: string } | null> {
+  try {
+    const res = await fetch(`/api/reviews/${reviewId}/dismiss`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dismissed }),
+    });
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
+export interface AdjustedScore {
+  riskScore: number;
+  verdict: string;
+  originalRiskScore: number;
+  originalVerdict: string;
+}
+
 export function useDismissedFlags(reviewId: string) {
   const [dismissed, setDismissed] = useState<DismissedEntry[]>([]);
+  const [adjustedScore, setAdjustedScore] = useState<AdjustedScore | null>(null);
+  const syncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const store = loadStore(reviewId);
     setDismissed(store.dismissed);
+
+    // Load server-side dismissals on mount
+    if (reviewId) {
+      fetch(`/api/reviews/${reviewId}`)
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => {
+          if (!data) return;
+          // If server has dismissals and local doesn't, use server
+          const serverDismissed = (data.dismissedFlags as DismissedEntry[] | null) ?? [];
+          const localStore = loadStore(reviewId);
+          if (serverDismissed.length > 0 && localStore.dismissed.length === 0) {
+            setDismissed(serverDismissed);
+            saveStore({ version: 1, reviewId, dismissed: serverDismissed });
+          }
+          if (data.originalRiskScore != null) {
+            setAdjustedScore({
+              riskScore: data.riskScore,
+              verdict: data.verdict,
+              originalRiskScore: data.originalRiskScore,
+              originalVerdict: data.originalVerdict,
+            });
+          }
+        })
+        .catch(() => {});
+    }
 
     const onStorage = (e: StorageEvent) => {
       if (e.key === storageKey(reviewId)) {
@@ -79,14 +131,27 @@ export function useDismissedFlags(reviewId: string) {
     return () => window.removeEventListener("storage", onStorage);
   }, [reviewId]);
 
+  const scheduleSync = useCallback(
+    (entries: DismissedEntry[]) => {
+      if (syncTimer.current) clearTimeout(syncTimer.current);
+      syncTimer.current = setTimeout(async () => {
+        const result = await syncToServer(reviewId, entries);
+        if (result) {
+          setAdjustedScore(result as AdjustedScore);
+        }
+      }, 300);
+    },
+    [reviewId],
+  );
+
   const isDismissed = useCallback(
     (key: string) => dismissed.some((d) => d.key === key),
-    [dismissed]
+    [dismissed],
   );
 
   const getDismissal = useCallback(
     (key: string) => dismissed.find((d) => d.key === key),
-    [dismissed]
+    [dismissed],
   );
 
   const dismiss = useCallback(
@@ -95,10 +160,11 @@ export function useDismissedFlags(reviewId: string) {
         if (prev.some((d) => d.key === key)) return prev;
         const next = [...prev, { key, reason, note, at: Date.now() }];
         saveStore({ version: 1, reviewId, dismissed: next });
+        scheduleSync(next);
         return next;
       });
     },
-    [reviewId]
+    [reviewId, scheduleSync],
   );
 
   const restore = useCallback(
@@ -106,13 +172,14 @@ export function useDismissedFlags(reviewId: string) {
       setDismissed((prev) => {
         const next = prev.filter((d) => d.key !== key);
         saveStore({ version: 1, reviewId, dismissed: next });
+        scheduleSync(next);
         return next;
       });
     },
-    [reviewId]
+    [reviewId, scheduleSync],
   );
 
   const dismissedCount = dismissed.length;
 
-  return { isDismissed, getDismissal, dismiss, restore, dismissedCount };
+  return { isDismissed, getDismissal, dismiss, restore, dismissedCount, adjustedScore };
 }

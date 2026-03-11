@@ -92,10 +92,14 @@ model Review {
   synthesis           Json?
   analysisWarnings    Json?   // string[]
 
+  dismissedFlags      Json?   // { key, reason, at }[] — persisted dismissals
+  originalRiskScore   Int?    // original score before dismissals
+  originalVerdict     String? // original verdict before dismissals
+
   status    String @default("pending") // pending, processing, completed, failed
   error     String?
   verdict   String? // publishable, borderline, not_publishable
-  riskScore Int?    // 0-100
+  riskScore Int?    // 0-100 (adjusted for dismissals)
 
   @@map("reviews")
 }

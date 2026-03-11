@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo, useCallback, Suspense } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import type { SynthesisReport, LegalFlag, PolicyFlag } from "@/lib/pipeline/types";
 import type { DocumentFacts } from "@/lib/documents/types";
@@ -679,7 +679,11 @@ function ResultsContent() {
   const [resuming, setResuming] = useState(false);
   const [expandedRisk, setExpandedRisk] = useState<string | null>(null);
   const [resumeStages, setResumeStages] = useState<Array<{ stage: number; name: string; status: string; error?: string }>>([]);
-  const [stageLogs, setStageLogs] = useState<StageLogEntry[]>([]);;
+  const [stageLogs, setStageLogs] = useState<StageLogEntry[]>([]);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleValue, setTitleValue] = useState("");
+  const [currentTitle, setCurrentTitle] = useState<string | null>(null);
+  const titleInputRef = useRef<HTMLInputElement>(null);
   const { theme, toggle: toggleTheme } = useTheme();
   const onboarding = useOnboarding("results");
 
@@ -690,7 +694,7 @@ function ResultsContent() {
         if (!r.ok) throw new Error("Not found");
         return r.json();
       })
-      .then((d) => { setData(d); setLoading(false); })
+      .then((d) => { setData(d); setCurrentTitle(d.scriptTitle); setLoading(false); })
       .catch(() => setLoading(false));
     fetch(`/api/reviews/${id}/logs`)
       .then((r) => r.ok ? r.json() : [])
@@ -751,7 +755,7 @@ function ResultsContent() {
   }, [id, resuming]);
 
   /* ── Dismissed flags ── */
-  const { isDismissed, getDismissal, dismiss, restore, dismissedCount } = useDismissedFlags(id ?? "");
+  const { isDismissed, getDismissal, dismiss, restore, dismissedCount, adjustedScore } = useDismissedFlags(id ?? "");
 
   /* ── Derived data (stable references via useMemo) ── */
   const report = data?.synthesis ?? null;
@@ -933,6 +937,11 @@ function ResultsContent() {
     return "var(--red)";
   };
 
+  /* Use adjusted score when flags have been dismissed */
+  const displayScore = adjustedScore?.riskScore ?? report?.riskScore ?? 0;
+  const displayVerdict = adjustedScore?.verdict ?? report?.verdict ?? "borderline";
+  const hasScoreAdjustment = adjustedScore != null && adjustedScore.riskScore !== adjustedScore.originalRiskScore;
+
   if (!id) return <div className="p-8 text-[var(--text-dim)]">No review ID</div>;
   if (loading) return <LoadingSkeleton />;
   if (!data) return <div className="p-8 text-[var(--red)]">Review not found</div>;
@@ -944,9 +953,50 @@ function ResultsContent() {
         <div>
           <div className="flex items-center gap-3">
             <div className="w-2 h-2 bg-[var(--green)]" />
-            <h1 className="text-lg tracking-widest text-[var(--text-bright)] uppercase">
-              Analysis Report
-            </h1>
+            {editingTitle ? (
+              <input
+                ref={titleInputRef}
+                value={titleValue}
+                onChange={(e) => setTitleValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    const v = titleValue.trim();
+                    setCurrentTitle(v || null);
+                    setEditingTitle(false);
+                    fetch(`/api/reviews/${id}`, {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ scriptTitle: v }),
+                    });
+                  }
+                  if (e.key === "Escape") setEditingTitle(false);
+                }}
+                onBlur={() => {
+                  const v = titleValue.trim();
+                  setCurrentTitle(v || null);
+                  setEditingTitle(false);
+                  fetch(`/api/reviews/${id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ scriptTitle: v }),
+                  });
+                }}
+                maxLength={200}
+                className="text-lg tracking-widest text-[var(--text-bright)] uppercase bg-[var(--bg)] border border-[var(--accent)] px-2 py-0.5 outline-none"
+                autoFocus
+              />
+            ) : (
+              <h1
+                className="text-lg tracking-widest text-[var(--text-bright)] uppercase cursor-pointer hover:underline"
+                onClick={() => {
+                  setTitleValue(currentTitle || "");
+                  setEditingTitle(true);
+                }}
+                title="Click to rename"
+              >
+                {currentTitle || "Analysis Report"}
+              </h1>
+            )}
           </div>
           <p className="text-xs text-[var(--text-dim)] mt-1">
             {data.caseState} // {data.caseStatus.toUpperCase()} // {new Date(data.createdAt).toLocaleString()}
@@ -1076,26 +1126,36 @@ function ResultsContent() {
         <div
           data-tour="verdict-banner"
           className="border p-4 mb-6"
-          style={{ borderColor: verdictColor(report.verdict) }}
+          style={{ borderColor: verdictColor(displayVerdict) }}
         >
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div
                 className="w-3 h-3"
-                style={{ background: verdictColor(report.verdict) }}
+                style={{ background: verdictColor(displayVerdict) }}
               />
               <span
                 className="text-xl tracking-widest uppercase font-bold"
-                style={{ color: verdictColor(report.verdict) }}
+                style={{ color: verdictColor(displayVerdict) }}
               >
-                {report.verdict.replaceAll("_", " ")}
+                {displayVerdict.replaceAll("_", " ")}
               </span>
+              {hasScoreAdjustment && (
+                <span className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider">
+                  ({dismissedCount} dismissed)
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-3">
               <div className="text-3xl font-bold text-[var(--text-bright)]">
-                {report.riskScore}
+                {displayScore}
               </div>
               <div className="text-[10px] text-[var(--text-dim)] uppercase">/ 100</div>
+              {hasScoreAdjustment && (
+                <div className="text-[10px] text-[var(--text-dim)] line-through">
+                  {adjustedScore!.originalRiskScore}
+                </div>
+              )}
             </div>
           </div>
           <div className="mt-3">
@@ -1116,8 +1176,8 @@ function ResultsContent() {
             <div
               className="h-full transition-all"
               style={{
-                width: `${Math.min(100, Math.max(0, report.riskScore))}%`,
-                background: riskBarColor(report.riskScore),
+                width: `${Math.min(100, Math.max(0, displayScore))}%`,
+                background: riskBarColor(displayScore),
               }}
             />
             {[30, 60, 80].map((t) => (
