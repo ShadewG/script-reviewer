@@ -2,7 +2,6 @@
 
 import { useState, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import type { DocumentFacts } from "@/lib/documents/types";
 import type { VideoFrameFinding } from "@/lib/pipeline/types";
 import { useTheme } from "@/lib/theme";
 import { useOnboarding, OnboardingOverlay } from "@/lib/onboarding";
@@ -90,6 +89,18 @@ interface StageStatus {
   name: string;
   status: "pending" | "running" | "complete" | "error";
   error?: string;
+  note?: string;
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) {
+    return `${Math.round((bytes / (1024 * 1024)) * 10) / 10}MB`;
+  }
+  return `${Math.round(bytes / 1024)}KB`;
+}
+
+function fileIdentity(file: File): string {
+  return `${file.name}:${file.size}:${file.lastModified}`;
 }
 
 type FrameSignature = {
@@ -138,7 +149,7 @@ function hasHardSignal(
   );
 }
 
-const STAGE_ESTIMATES: Record<number, number> = { 0: 5, 1: 20, 2: 10, 3: 25, 4: 15 };
+const STAGE_ESTIMATES: Record<number, number> = { 0: 90, 1: 5, 2: 20, 3: 10, 4: 25, 5: 15 };
 
 export default function Home() {
   const router = useRouter();
@@ -146,6 +157,8 @@ export default function Home() {
   const onboarding = useOnboarding("homepage");
   const [inputMode, setInputMode] = useState<"paste" | "gdoc">("paste");
   const [script, setScript] = useState("");
+  const [captions, setCaptions] = useState("");
+  const [showCaptions, setShowCaptions] = useState(false);
   const [gdocUrl, setGdocUrl] = useState("");
   const [gdocFetching, setGdocFetching] = useState(false);
   const [gdocPreview, setGdocPreview] = useState<{ text: string; lineCount: number; charCount: number } | null>(null);
@@ -156,7 +169,7 @@ export default function Home() {
   const [footageTypes, setFootageTypes] = useState<string[]>([]);
   const [videoTitle, setVideoTitle] = useState("");
   const [thumbnailDesc, setThumbnailDesc] = useState("");
-  const [documentFacts, setDocumentFacts] = useState<DocumentFacts[]>([]);
+  const [queuedDocFiles, setQueuedDocFiles] = useState<File[]>([]);
   const [videoFindings, setVideoFindings] = useState<VideoFrameFinding[]>([]);
   const [videoUploading, setVideoUploading] = useState(false);
   const [videoError, setVideoError] = useState<string | null>(null);
@@ -167,7 +180,6 @@ export default function Home() {
   const [videoTranscribing, setVideoTranscribing] = useState(false);
   const [videoTranscriptError, setVideoTranscriptError] = useState<string | null>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
-  const [uploading, setUploading] = useState(false);
   const [uploadErrors, setUploadErrors] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [running, setRunning] = useState(false);
@@ -204,42 +216,26 @@ export default function Home() {
     }
   };
 
-  const handleFileUpload = useCallback(async (files: FileList | null) => {
+  const handleDocumentSelect = useCallback((files: FileList | null) => {
     if (!files || files.length === 0) return;
-    setUploading(true);
     setUploadErrors([]);
-    try {
-      const formData = new FormData();
-      for (let i = 0; i < files.length; i++) {
-        formData.append("files", files[i]);
+    const selected = Array.from(files);
+    setQueuedDocFiles((prev) => {
+      const seen = new Set(prev.map(fileIdentity));
+      const next = [...prev];
+      for (const file of selected) {
+        const key = fileIdentity(file);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        next.push(file);
       }
-      const res = await fetch("/api/upload-docs", {
-        method: "POST",
-        body: formData,
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        let msg = `Upload failed (${res.status})`;
-        try { msg = JSON.parse(text).error || msg; } catch { /* not JSON */ }
-        throw new Error(msg);
-      }
-      const data = await res.json();
-      if (data.documents?.length > 0) {
-        setDocumentFacts((prev) => [...prev, ...data.documents]);
-      }
-      if (data.errors?.length > 0) {
-        setUploadErrors(data.errors);
-      }
-    } catch (err) {
-      setUploadErrors([err instanceof Error ? err.message : "Upload failed"]);
-    } finally {
-      setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
+      return next;
+    });
+    if (fileInputRef.current) fileInputRef.current.value = "";
   }, []);
 
-  const removeDoc = (index: number) => {
-    setDocumentFacts((prev) => prev.filter((_, i) => i !== index));
+  const removeQueuedDoc = (index: number) => {
+    setQueuedDocFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
   const transcribeVideo = useCallback(async (file: File) => {
@@ -313,16 +309,22 @@ export default function Home() {
 
   const handleSubmit = async () => {
     const baseScript = inputMode === "gdoc" ? gdocPreview?.text || script : script;
-    const scriptText = [baseScript.trim(), videoTranscript.trim()]
-      .filter(Boolean)
-      .join("\n\n--- VIDEO TRANSCRIPT ---\n\n");
-    if (!scriptText.trim()) return;
+    const parts = [baseScript.trim()];
+    if (captions.trim()) parts.push("--- BODYCAM / CAPTIONS ---\n\n" + captions.trim());
+    if (videoTranscript.trim()) parts.push("--- VIDEO TRANSCRIPT ---\n\n" + videoTranscript.trim());
+    const scriptText = parts.filter(Boolean).join("\n\n");
+    if (!scriptText.trim() && !(inputMode === "gdoc" && gdocUrl.trim())) return;
     setRunning(true);
     setError(null);
     setStages([
-      { stage: 0, name: "SCRIPT PARSER", status: "pending" },
+      { stage: 0, name: "DOCUMENT EXTRACTION", status: "pending" },
       {
         stage: 1,
+        name: "SCRIPT PARSER",
+        status: "pending",
+      },
+      {
+        stage: 2,
         name:
           analysisMode === "monetization_only"
             ? "LEGAL REVIEW (SKIPPED)"
@@ -330,7 +332,7 @@ export default function Home() {
         status: analysisMode === "monetization_only" ? "complete" : "pending",
       },
       {
-        stage: 2,
+        stage: 3,
         name:
           analysisMode === "legal_only"
             ? "YOUTUBE POLICY (SKIPPED)"
@@ -338,20 +340,20 @@ export default function Home() {
         status: analysisMode === "legal_only" ? "complete" : "pending",
       },
       {
-        stage: 3,
+        stage: 4,
         name:
           analysisMode === "monetization_only"
             ? "CASE RESEARCH (SKIPPED)"
             : "CASE RESEARCH",
         status: analysisMode === "monetization_only" ? "complete" : "pending",
       },
-      { stage: 4, name: "SYNTHESIS", status: "pending" },
+      { stage: 5, name: "SYNTHESIS", status: "pending" },
     ]);
 
     abortRef.current = new AbortController();
 
     try {
-      const body: Record<string, unknown> = {
+      const payload: Record<string, unknown> = {
         state,
         caseStatus,
         hasMinors,
@@ -359,26 +361,52 @@ export default function Home() {
         videoTitle: videoTitle || undefined,
         thumbnailDesc: thumbnailDesc || undefined,
         analysisMode,
-        documentFacts: documentFacts.length > 0 ? documentFacts : undefined,
         videoFindings: videoFindings.length > 0 ? videoFindings : undefined,
+        videoTranscript: videoTranscript.trim() || undefined,
       };
 
       if (inputMode === "gdoc" && gdocUrl && !gdocPreview && !videoTranscript.trim()) {
-        body.gdocUrl = gdocUrl;
+        payload.gdocUrl = gdocUrl;
       } else {
-        body.script = scriptText;
+        payload.script = scriptText;
       }
 
-      const res = await fetch("/api/analyze", {
+      const requestInit: RequestInit = {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
         signal: abortRef.current.signal,
-      });
+      };
+
+      if (queuedDocFiles.length > 0) {
+        const formData = new FormData();
+        for (const [key, value] of Object.entries(payload)) {
+          if (value === undefined || value === null) continue;
+          if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+            formData.append(key, String(value));
+          } else {
+            formData.append(key, JSON.stringify(value));
+          }
+        }
+        for (const file of queuedDocFiles) {
+          formData.append("files", file);
+        }
+        requestInit.body = formData;
+      } else {
+        requestInit.headers = { "Content-Type": "application/json" };
+        requestInit.body = JSON.stringify(payload);
+      }
+
+      const res = await fetch("/api/analyze", requestInit);
 
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "Request failed");
+        const text = await res.text();
+        let msg = "Request failed";
+        try {
+          const err = JSON.parse(text);
+          msg = err.detail || err.error || msg;
+        } catch {
+          msg = text || msg;
+        }
+        throw new Error(msg);
       }
 
       const reader = res.body?.getReader();
@@ -407,7 +435,7 @@ export default function Home() {
               setStages((prev) =>
                 prev.map((s) =>
                   s.stage === data.stage
-                    ? { ...s, status: data.status, name: data.name || s.name, error: data.error }
+                    ? { ...s, status: data.status, name: data.name || s.name, error: data.error, note: data.note }
                     : s
                 )
               );
@@ -433,8 +461,9 @@ export default function Home() {
 
   const currentScript = (() => {
     const baseScript = inputMode === "gdoc" ? gdocPreview?.text || "" : script;
-    return [baseScript.trim(), videoTranscript.trim()].filter(Boolean).join("\n");
+    return [baseScript.trim(), captions.trim(), videoTranscript.trim()].filter(Boolean).join("\n");
   })();
+  const canSubmit = currentScript.trim().length > 0 || (inputMode === "gdoc" && gdocUrl.trim().length > 0);
 
   return (
     <div className="min-h-screen p-4 max-w-5xl mx-auto">
@@ -508,13 +537,41 @@ export default function Home() {
                 value={script}
                 onChange={(e) => setScript(e.target.value)}
                 placeholder="Paste your documentary script here..."
-                className="w-full h-[500px] resize-none text-sm leading-relaxed"
+                className={`w-full ${showCaptions ? "h-[320px]" : "h-[500px]"} resize-none text-sm leading-relaxed transition-all`}
                 disabled={running}
               />
               <div className="flex justify-between mt-2 text-xs text-[var(--text-dim)]">
                 <span>{script.split("\n").length} lines</span>
                 <span>{script.length.toLocaleString()} chars</span>
               </div>
+
+              {/* Captions / Bodycam section */}
+              <button
+                onClick={() => setShowCaptions(!showCaptions)}
+                disabled={running}
+                className="mt-3 w-full py-2 text-xs uppercase tracking-wider border border-dashed border-[var(--border)] text-[var(--text-dim)] hover:text-[var(--text)] hover:border-[var(--text-dim)] transition-colors flex items-center justify-center gap-2"
+              >
+                <span>{showCaptions ? "−" : "+"}</span>
+                <span>Bodycam / Captions{captions.trim() ? ` (${captions.split("\n").length} lines)` : ""}</span>
+              </button>
+              {showCaptions && (
+                <div className="mt-2">
+                  <p className="text-[10px] text-[var(--text-dim)] mb-2">
+                    Paste bodycam captions, subtitle files, or any separate footage transcript here. This gets analyzed alongside the script.
+                  </p>
+                  <textarea
+                    value={captions}
+                    onChange={(e) => setCaptions(e.target.value)}
+                    placeholder="Paste bodycam captions or subtitle text here..."
+                    className="w-full h-[160px] resize-none text-sm leading-relaxed"
+                    disabled={running}
+                  />
+                  <div className="flex justify-between mt-1 text-xs text-[var(--text-dim)]">
+                    <span>{captions.split("\n").length} lines</span>
+                    <span>{captions.length.toLocaleString()} chars</span>
+                  </div>
+                </div>
+              )}
             </>
           ) : (
             <>
@@ -671,23 +728,23 @@ export default function Home() {
               Supplemental Docs
             </label>
             <p className="text-[10px] text-[var(--text-dim)] mb-2">
-              Upload police reports, court filings, autopsy reports to verify script claims and reduce false flags
+              Add police reports, court filings, autopsy reports, or screenshots. They will process during the main analysis run so you only wait once.
             </p>
             <input
               ref={fileInputRef}
               type="file"
               multiple
               accept=".pdf,.png,.jpg,.jpeg,.webp"
-              onChange={(e) => handleFileUpload(e.target.files)}
-              disabled={running || uploading}
+              onChange={(e) => handleDocumentSelect(e.target.files)}
+              disabled={running}
               className="hidden"
             />
             <button
               onClick={() => fileInputRef.current?.click()}
-              disabled={running || uploading}
+              disabled={running}
               className="w-full py-2 text-xs uppercase tracking-wider border border-dashed border-[var(--border)] text-[var(--text-dim)] hover:text-[var(--text)] hover:border-[var(--text-dim)] disabled:opacity-30 transition-colors"
             >
-              {uploading ? "PROCESSING..." : "UPLOAD DOCUMENTS"}
+              ADD DOCUMENTS
             </button>
             {uploadErrors.length > 0 && (
               <div className="mt-2 space-y-1">
@@ -696,19 +753,23 @@ export default function Home() {
                 ))}
               </div>
             )}
-            {documentFacts.length > 0 && (
+            {queuedDocFiles.length > 0 && (
               <div className="mt-2 space-y-2">
-                {documentFacts.map((doc, i) => (
+                <div className="text-[10px] text-[var(--text-dim)]">
+                  {queuedDocFiles.length} file{queuedDocFiles.length === 1 ? "" : "s"} queued /{" "}
+                  {formatFileSize(queuedDocFiles.reduce((sum, file) => sum + file.size, 0))}
+                </div>
+                {queuedDocFiles.map((file, i) => (
                   <div
-                    key={i}
+                    key={fileIdentity(file)}
                     className="border border-[var(--border)] bg-[var(--bg-surface)] p-2 text-[10px]"
                   >
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-[var(--text-bright)] font-medium truncate">
-                        {doc.fileName}
+                        {file.name}
                       </span>
                       <button
-                        onClick={() => removeDoc(i)}
+                        onClick={() => removeQueuedDoc(i)}
                         disabled={running}
                         className="text-[var(--text-dim)] hover:text-[var(--red)] ml-2 flex-shrink-0"
                       >
@@ -716,10 +777,10 @@ export default function Home() {
                       </button>
                     </div>
                     <div className="text-[var(--text-dim)]">
-                      {doc.docType} / {doc.verifiableFacts.length} facts / {doc.people.length} people
+                      {file.type || "document"} / {formatFileSize(file.size)}
                     </div>
-                    <div className="text-[var(--text-dim)] mt-1 line-clamp-2">
-                      {doc.summary}
+                    <div className="text-[var(--text-dim)] mt-1">
+                      Will be extracted in stage 1 when you press Analyze Script
                     </div>
                   </div>
                 ))}
@@ -811,7 +872,7 @@ export default function Home() {
           <button
             data-tour="analyze-btn"
             onClick={handleSubmit}
-            disabled={running || uploading || videoUploading || videoTranscribing || !currentScript.trim()}
+            disabled={running || videoUploading || videoTranscribing || !canSubmit}
             className="w-full py-3 text-sm uppercase tracking-widest border border-[var(--border)] text-[var(--text-bright)] bg-[var(--bg-surface)] hover:bg-[var(--bg-elevated)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             {running ? "ANALYZING..." : "ANALYZE SCRIPT"}
@@ -872,6 +933,11 @@ export default function Home() {
                     {s.status === "error" && s.error && (
                       <div className="text-[10px] text-[var(--red)] mt-0.5 truncate">
                         {s.error}
+                      </div>
+                    )}
+                    {s.note && s.status !== "error" && (
+                      <div className="text-[10px] text-[var(--text-dim)] mt-0.5 truncate">
+                        {s.note}
                       </div>
                     )}
                   </div>
